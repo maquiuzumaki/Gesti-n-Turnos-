@@ -1,6 +1,6 @@
-import { loadState, resetState, saveState } from "./services/store.js?v=20260706-3";
+import { loadState, resetState, saveState } from "./services/store.js?v=20260707-3";
 import { canEditSchedule, canManageEmployees, canResolveRequests, canSeeAudit, isAdminRole, roleLabel } from "./services/permissions.js?v=20260703-1";
-import { createDraftPlanningWeek } from "./services/planningWeeks.js?v=20260706-1";
+import { createDraftPlanningWeek } from "./services/planningWeeks.js?v=20260707-1";
 import { demoUsers as canonicalDemoUsers } from "./data/mockData.js?v=20260706-3";
 
 const app = document.querySelector("#app");
@@ -16,8 +16,43 @@ let requestFilter = "all";
 const icons = {
   dashboard: "▦", schedule: "▤", employees: "♙", requests: "↔", notifications: "♢", audit: "◷", logout: "↪", plus: "+", menu: "☰",
 };
-const statusText = { pending: "Pendiente", review: "En revisión", approved: "Aprobada", rejected: "Rechazada", active: "Activo", inactive: "Inactivo" };
+const statusText = {
+  pending: "Pendiente",
+  pendingPartner: "Pendiente de compañero",
+  partnerAccepted: "Aceptada por compañero",
+  partnerRejected: "Rechazada por compañero",
+  pendingManager: "Pendiente de encargada",
+  review: "En revisión",
+  approved: "Aprobada",
+  rejected: "Rechazada",
+  active: "Activo",
+  inactive: "Inactivo",
+};
 const shiftState = { working: "Trabaja", sick: "Enfermo", leave: "Licencia", off: "Franco" };
+const requestTypes = {
+  absence: "Ausencia",
+  leave: "Licencia",
+  dayOffChange: "Cambio de franco",
+  shiftChange: "Cambio de turno",
+};
+const requestTypeLegacyMap = {
+  "Parte de enfermo": "absence",
+  Ausencia: "absence",
+  Licencia: "leave",
+  Vacaciones: "leave",
+  "Cambio de franco": "dayOffChange",
+  "Cambio de turno": "shiftChange",
+};
+const shiftOptions = ["Mañana", "Tarde"];
+const activeRequestStatuses = ["pending", "pendingPartner", "pendingManager", "review"];
+const exceptionTypes = {
+  studyLeave: "Licencia por estudio",
+  absence: "Ausencia",
+  dayOffChange: "Cambio de franco",
+  doubleShift: "Doble turno",
+  replacement: "Reemplazo",
+  uncovered: "Turno o puesto sin cubrir",
+};
 
 function toast(message, tone = "success") {
   const node = document.createElement("div");
@@ -101,13 +136,13 @@ function renderPage() {
 }
 
 function pageHeading(kicker, title, description, action = "") {
-  return `<div class="page-heading"><div><span class="eyebrow">${kicker}</span><h1>${title}</h1><p>${description}</p></div>${action}</div>`;
+  return `<div class="page-heading"><div><span class="eyebrow">${escapeHtml(kicker)}</span><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p></div>${action}</div>`;
 }
 
 function dashboardPage() {
   if (!isAdminRole(user.role)) return staffDashboard();
   const active = state.employees.filter((e) => e.status === "active").length;
-  const pending = state.requests.filter((r) => ["pending", "review"].includes(r.status)).length;
+  const pending = state.requests.filter((r) => activeRequestStatuses.includes(r.status)).length;
   const absent = state.schedule.filter((s) => ["sick", "leave"].includes(s.state) && s.day === state.days[0]).length;
   const todayShifts = state.schedule.filter((s) => s.day === state.days[0]);
   return `${pageHeading("VIERNES, 3 DE JULIO DE 2026", `Buen día, ${user.name}`, "Este es el pulso de la operación para hoy.", `<button class="button primary" data-page="schedule">Ver grilla <span>→</span></button>`)}
@@ -147,7 +182,7 @@ function dashboardPage() {
     </section>
     <section class="dashboard-grid single-panel">
       <article class="panel"><div class="panel-head"><div><span class="eyebrow">PARA RESOLVER</span><h2>Solicitudes recientes</h2></div><button class="text-link" data-page="requests">Ver todas</button></div>
-        <div class="request-list">${state.requests.filter((r) => ["pending", "review"].includes(r.status)).slice(0, 3).map(requestMini).join("") || empty("No hay solicitudes pendientes")}</div>
+        <div class="request-list">${state.requests.filter((r) => activeRequestStatuses.includes(r.status)).slice(0, 3).map(requestMini).join("") || empty("No hay solicitudes pendientes")}</div>
       </article>
     </section>
     <section class="panel activity-strip"><div><span class="eyebrow">ACTIVIDAD RECIENTE</span><h2>Lo último en Uzumaki</h2></div>${state.auditLogs.slice(0, 3).map((a) => `<div class="activity-item"><span class="activity-dot"></span><p><strong>${a.user}</strong> ${a.action.toLowerCase()}<small>${a.time} · ${a.entity}</small></p></div>`).join("")}<button class="icon-button" data-page="audit">→</button></section>`;
@@ -170,7 +205,7 @@ function staffDashboard() {
       <div><span class="eyebrow light">PERSONAL OPERATIVO</span><h2>${employee.name}</h2><p>${employee.role} · ${employee.sector || "Sin sector"} · ${employee.turno || "Turno flexible"}</p></div>
       <div class="staff-profile-status"><strong>${next ? formatIsoDate(next.date) : "—"}</strong><small>Próxima asignación</small></div>
     </section>
-    <section class="metric-grid staff-metrics">${metric("Asignaciones publicadas", myAssignments.length, publishedWeek ? publishedWeek.name : "Sin grilla publicada", "sun", "▤")}${metric("Francos publicados", myDaysOff.length, "Semana publicada", "amber", "○")}${metric("Solicitudes activas", ownRequests.filter((r) => ["pending", "review"].includes(r.status)).length, "Seguimiento personal", "blue", "↔")}</section>
+    <section class="metric-grid staff-metrics">${metric("Asignaciones publicadas", myAssignments.length, publishedWeek ? publishedWeek.name : "Sin grilla publicada", "sun", "▤")}${metric("Francos publicados", myDaysOff.length, "Semana publicada", "amber", "○")}${metric("Solicitudes activas", ownRequests.filter((r) => activeRequestStatuses.includes(r.status)).length, "Seguimiento personal", "blue", "↔")}</section>
     <section class="staff-profile-grid">
       <article class="panel"><div class="panel-head"><div><span class="eyebrow">DATOS OPERATIVOS</span><h2>Mi puesto habitual</h2></div></div>
         <div class="staff-info-list">
@@ -220,7 +255,138 @@ function metric(label, value, meta, color, icon) {
 }
 
 function requestMini(r) {
-  return `<button class="request-mini" data-page="requests"><span class="request-icon">${r.type.includes("enfermo") ? "+" : "↔"}</span><span><strong>${r.employee}</strong><small>${r.type} · ${r.detail}</small></span><span class="badge ${r.status}">${statusText[r.status]}</span></button>`;
+  const request = normalizeRequestForView(r);
+  return `<button class="request-mini" data-page="requests"><span class="request-icon">${request.type === "absence" ? "+" : "↔"}</span><span><strong>${escapeHtml(request.employee)}</strong><small>${escapeHtml(requestTypes[request.type] || request.type)} · ${escapeHtml(request.detail)}</small></span><span class="badge ${request.status}">${escapeHtml(statusText[request.status] || request.status)}</span></button>`;
+}
+
+function normalizeRequestForView(request) {
+  const type = requestTypes[request.type] ? request.type : requestTypeLegacyMap[request.type] || "absence";
+  const legacyStatus = request.status === "pending"
+    ? request.requiresPartner ? "pendingPartner" : "pendingManager"
+    : ["review", "partnerAccepted"].includes(request.status) ? "pendingManager" : request.status || "pendingManager";
+  const employee = request.employee || state.employees.find((item) => item.id === request.employeeId)?.name || "Sin solicitante";
+  return {
+    ...request,
+    type,
+    status: statusText[legacyStatus] ? legacyStatus : "pendingManager",
+    employee,
+    detail: request.detail || request.note || "",
+    note: request.note || request.detail || "",
+    scheduleImpact: request.scheduleImpact || {},
+  };
+}
+
+function requestMetaItems(request) {
+  const impact = request.scheduleImpact || {};
+  const partner = state.employees.find((employee) => employee.id === request.partnerEmployeeId);
+  if (["absence", "leave"].includes(request.type)) {
+    return [
+      ["Fecha", impact.target?.date ? formatIsoDate(impact.target.date) : "Sin fecha"],
+      ["Turno", impact.target?.shift || "Sin turno"],
+      ["Detalle", request.detail],
+    ];
+  }
+  return [
+    ["Origen", impact.original?.date ? `${formatIsoDate(impact.original.date)} · ${impact.original.shift}` : "Sin origen"],
+    ["Propuesto", impact.proposed?.date ? `${formatIsoDate(impact.proposed.date)} · ${impact.proposed.shift}` : "Sin propuesta"],
+    ["Compañero", partner?.name || "Sin compañero"],
+  ];
+}
+
+function requestEmployeeName(employeeId, fallback = "Sin persona") {
+  return state.employees.find((employee) => employee.id === employeeId)?.name || fallback;
+}
+
+function requestAssignmentsByDateShift(employeeId, date, shift) {
+  const week = state.planningWeek;
+  if (!week || !date || !shift || !employeeId) return [];
+  return (week.assignments || [])
+    .map((assignment) => ({
+      assignment,
+      position: week.operationalPositions.find((position) => position.id === assignment.positionId),
+    }))
+    .filter(({ assignment, position }) => assignment.employeeId === employeeId && position?.date === date && position?.shift === shift);
+}
+
+function requestImpactRows(rows) {
+  return `<div class="request-impact-grid">${rows.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join("")}</div>`;
+}
+
+function insufficientImpactPreview() {
+  return `<p class="request-impact-empty">No hay información suficiente para calcular el impacto</p>`;
+}
+
+function requestImpactPreview(request) {
+  if (!isAdminRole(user.role) || request.status !== "pendingManager") return "";
+  const impact = request.scheduleImpact || {};
+  let content = "";
+  if (["absence", "leave"].includes(request.type)) {
+    const target = impact.target || {};
+    if (!target.date || !target.shift || !request.employeeId || !state.planningWeek) content = insufficientImpactPreview();
+    else {
+      const assignments = requestAssignmentsByDateShift(request.employeeId, target.date, target.shift);
+      const positions = assignments.map(({ position }) => position.label).join(", ");
+      content = requestImpactRows([
+        ["Fecha", formatIsoDate(target.date)],
+        ["Turno", target.shift],
+        ["Persona afectada", request.employee],
+        ["Puesto", positions || "No se encontró puesto asignado en la grilla"],
+        ["Impacto", `${request.employee} quedaría ausente`],
+        ["Cobertura", assignments.length ? "Requiere reemplazo para no dejar el turno sin cubrir" : "El turno quedaría sin cubrir o requiere revisión manual"],
+      ]);
+    }
+  } else if (request.type === "dayOffChange") {
+    const original = impact.original || {};
+    const proposed = impact.proposed || {};
+    if (!original.date || !original.shift || !proposed.date || !proposed.shift || !request.partnerEmployeeId) content = insufficientImpactPreview();
+    else {
+      content = requestImpactRows([
+        ["Fecha/turno original", `${formatIsoDate(original.date)} · ${original.shift}`],
+        ["Fecha/turno propuesto", `${formatIsoDate(proposed.date)} · ${proposed.shift}`],
+        ["Persona que cambia", request.employee],
+        ["Compañero involucrado", requestEmployeeName(request.partnerEmployeeId)],
+        ["Impacto esperado", `${request.employee} intercambiaría el franco con ${requestEmployeeName(request.partnerEmployeeId)}`],
+      ]);
+    }
+  } else if (request.type === "shiftChange") {
+    const original = impact.original || {};
+    const proposed = impact.proposed || {};
+    if (!original.date || !original.shift || !proposed.date || !proposed.shift || !request.partnerEmployeeId || !state.planningWeek) content = insufficientImpactPreview();
+    else {
+      const requesterAssignments = requestAssignmentsByDateShift(request.employeeId, original.date, original.shift);
+      const partnerAssignments = requestAssignmentsByDateShift(request.partnerEmployeeId, proposed.date, proposed.shift);
+      content = requestImpactRows([
+        ["Turno actual", `${formatIsoDate(original.date)} · ${original.shift}${requesterAssignments[0]?.position ? ` · ${requesterAssignments[0].position.label}` : ""}`],
+        ["Turno propuesto", `${formatIsoDate(proposed.date)} · ${proposed.shift}${partnerAssignments[0]?.position ? ` · ${partnerAssignments[0].position.label}` : ""}`],
+        ["Solicitante", request.employee],
+        ["Compañero involucrado", requestEmployeeName(request.partnerEmployeeId)],
+        ["Intercambio esperado", `${request.employee} tomaría el turno de ${requestEmployeeName(request.partnerEmployeeId)} y viceversa`],
+      ]);
+    }
+  } else {
+    content = insufficientImpactPreview();
+  }
+  return `<section class="request-impact-preview"><div><span class="eyebrow">SIMULACIÓN</span><h3>Vista previa del impacto</h3></div>${content}</section>`;
+}
+
+function canViewRequestDetail(request) {
+  return isAdminRole(user.role) || request.employeeId === user.employeeId || request.partnerEmployeeId === user.employeeId;
+}
+
+function requestMatchesFilter(request, filter) {
+  if (filter === "all") return true;
+  if (filter === "active") return activeRequestStatuses.includes(request.status);
+  return request.status === filter;
+}
+
+function canActAsPartner(request) {
+  return !isAdminRole(user.role)
+    && request.partnerEmployeeId === user.employeeId
+    && request.status === "pendingPartner";
+}
+
+function canManagerResolveRequest(request) {
+  return canResolveRequests(user.role) && request.status === "pendingManager";
 }
 
 function schedulePage() {
@@ -263,23 +429,25 @@ function planningWeekPage() {
   const assignmentCount = week.assignments.length;
   const emptyPositionCount = week.operationalPositions.length - assignmentCount;
   const daysOffCount = week.daysOff?.length || 0;
+  const exceptionCount = week.exceptions?.length || 0;
   const conflicts = detectPlanningConflicts(week);
   const isPublished = week.status === "published";
-  const publishAction = week.status === "draft" && canCreate ? `<button class="button primary" data-action="publish-planning-week">Publicar grilla</button>` : "";
+  const publishAction = canCreate ? `<div class="heading-actions"><button class="button secondary" data-action="new-week-exception">Registrar excepción</button>${week.status === "draft" ? `<button class="button primary" data-action="publish-planning-week">Publicar grilla</button>` : ""}</div>` : "";
   return `${pageHeading("PLANIFICACIÓN SEMANAL", week.name, `${formatIsoDate(week.startDate)} — ${formatIsoDate(week.endDate)}`, publishAction)}
     <section class="week-lifecycle-card ${isPublished ? "week-published" : "week-draft"}">
-      <div class="week-lifecycle-head"><span class="week-state-icon">${isPublished ? "✓" : "✎"}</span><div><span class="eyebrow">${isPublished ? "GRILLA PUBLICADA" : "SEMANA CREADA"}</span><h2>${week.name}</h2><p>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)}${isPublished ? ` · Publicada ${formatDateTime(week.publishedAt)} por ${week.publishedBy?.name || "Usuario"}` : ""}</p></div><span class="week-status ${isPublished ? "published" : "draft"}">${isPublished ? "Publicada" : "Borrador"}</span></div>
+      <div class="week-lifecycle-head"><span class="week-state-icon">${isPublished ? "✓" : "✎"}</span><div><span class="eyebrow">${isPublished ? "GRILLA PUBLICADA" : "SEMANA CREADA"}</span><h2>${escapeHtml(week.name)}</h2><p>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)}${isPublished ? ` · Publicada ${formatDateTime(week.publishedAt)} por ${escapeHtml(week.publishedBy?.name || "Usuario")}` : ""}</p></div><span class="week-status ${isPublished ? "published" : "draft"}">${isPublished ? "Publicada" : "Borrador"}</span></div>
       <div class="week-lifecycle-flow" aria-label="Ciclo de vida inicial"><span class="complete"><i>✓</i><b>Sin crear</b></span><em>→</em><span class="${isPublished ? "complete" : "active"}"><i>${isPublished ? "✓" : "2"}</i><b>Borrador</b></span><em>→</em><span class="${isPublished ? "active" : ""}"><i>${isPublished ? "✓" : "3"}</i><b>Publicada</b></span></div>
       <div class="week-empty-canvas">
-        <span class="week-empty-symbol">▦</span><div><h3>${isPublished ? "Grilla publicada editable" : "Grilla lista para completar"}</h3><p>${assignmentCount} puestos asignados, ${emptyPositionCount} sin asignar y ${daysOffCount} francos manuales cargados. ${isPublished ? "La encargada puede ajustar la grilla cuando el servicio lo requiera." : "Las coberturas continúan vacías."}</p></div>
+        <span class="week-empty-symbol">▦</span><div><h3>${isPublished ? "Grilla publicada editable" : "Grilla lista para completar"}</h3><p>${assignmentCount} puestos asignados, ${emptyPositionCount} sin asignar, ${daysOffCount} francos manuales y ${exceptionCount} excepciones semanales. ${isPublished ? "La encargada puede ajustar la grilla cuando el servicio lo requiera." : "Las coberturas continúan vacías."}</p></div>
       </div>
       ${planningConflictPanel(conflicts)}
+      ${weeklyExceptionsPanel(week, true)}
       ${planningWeekStructure(week, conflicts)}
       <div class="week-empty-collections" aria-label="Contenido inicial de la semana">
         <span><b>Puestos operativos</b><small>${week.operationalPositions.length} puestos</small></span>
         <span><b>Asignaciones</b><small>${assignmentCount} manuales</small></span>
         <span><b>Francos</b><small>${daysOffCount ? `${daysOffCount} manuales` : "Vacío"}</small></span>
-        <span><b>Coberturas</b><small>Vacío</small></span>
+        <span><b>Excepciones</b><small>${exceptionCount ? `${exceptionCount} ajustes` : "Vacío"}</small></span>
       </div>
     </section>`;
 }
@@ -290,10 +458,11 @@ function staffPublishedPlanningWeekPage(week) {
   const conflicts = detectPlanningConflicts(week);
   return `${pageHeading("GRILLA PUBLICADA", week.name, `${formatIsoDate(week.startDate)} — ${formatIsoDate(week.endDate)}`)}
     <section class="week-lifecycle-card week-published staff-published-week">
-      <div class="week-lifecycle-head"><span class="week-state-icon">✓</span><div><span class="eyebrow">SOLO LECTURA</span><h2>${week.name}</h2><p>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)} · Publicada ${formatDateTime(week.publishedAt)}</p></div><span class="week-status published">Publicada</span></div>
+      <div class="week-lifecycle-head"><span class="week-state-icon">✓</span><div><span class="eyebrow">SOLO LECTURA</span><h2>${escapeHtml(week.name)}</h2><p>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)} · Publicada ${formatDateTime(week.publishedAt)}</p></div><span class="week-status published">Publicada</span></div>
       <div class="week-empty-canvas">
-        <span class="week-empty-symbol">▦</span><div><h3>Grilla disponible para consultar</h3><p>${assignmentCount} puestos publicados y ${daysOffCount} francos informados. Esta vista no permite editar, publicar ni cargar cambios.</p></div>
+        <span class="week-empty-symbol">▦</span><div><h3>Grilla disponible para consultar</h3><p>${assignmentCount} puestos publicados, ${daysOffCount} francos informados y ${week.exceptions?.length || 0} excepciones semanales. Esta vista no permite editar, publicar ni cargar cambios.</p></div>
       </div>
+      ${weeklyExceptionsPanel(week, false)}
       ${planningWeekStructure(week, conflicts)}
     </section>`;
 }
@@ -304,6 +473,42 @@ function planningWeekStructure(week, conflicts) {
     ${planningPositionSector(week, { sector: "Pisos", key: "floors", icon: "🏥", eyebrow: "COBERTURA POR PISO", description: "Seis puestos diarios para los tres pisos y ambos turnos." }, conflicts)}
     ${planningDaysOffSection(week, conflicts)}
   </div>`;
+}
+
+function weeklyExceptionsPanel(week, editable) {
+  const exceptions = (week.exceptions || [])
+    .map((exception) => ({ ...exception, position: week.operationalPositions.find((position) => position.id === exception.positionId) }))
+    .filter((exception) => exception.position)
+    .sort((a, b) => a.position.date.localeCompare(b.position.date) || a.position.shift.localeCompare(b.position.shift));
+  return `<section class="weekly-exceptions-panel" aria-label="Excepciones semanales">
+    <div class="panel-head"><div><span class="eyebrow">AJUSTES PUNTUALES</span><h2>Excepciones de la semana</h2></div></div>
+    ${exceptions.length ? `<div class="weekly-exception-list">${exceptions.map((exception) => weeklyExceptionItem(exception, editable)).join("")}</div>` : empty("No hay excepciones registradas en esta semana")}
+  </section>`;
+}
+
+function weeklyExceptionItem(exception, editable) {
+  const affected = state.employees.find((employee) => employee.id === exception.affectedEmployeeId);
+  const cover = state.employees.find((employee) => employee.id === exception.coverEmployeeId);
+  const position = exception.position;
+  return `<article class="weekly-exception-item">
+    <span class="exception-marker">!</span>
+    <div><strong>${exceptionTypes[exception.type] || exception.type}</strong><small>${formatIsoDate(position.date)} · Turno ${position.shift} · ${position.label}</small></div>
+    <div><small>Persona afectada</small><strong>${affected?.name || "Puesto sin persona asignada"}</strong></div>
+    <div><small>Cubre</small><strong>${cover?.name || "Sin cobertura indicada"}</strong></div>
+    ${editable ? `<div class="exception-actions"><button class="row-action" data-action="edit-week-exception" data-exception-id="${exception.id}">Editar</button><button class="row-action danger" data-action="remove-week-exception" data-exception-id="${exception.id}">Eliminar</button></div>` : ""}
+  </article>`;
+}
+
+function positionExceptions(week, positionId) {
+  return (week.exceptions || []).filter((exception) => exception.positionId === positionId);
+}
+
+function positionExceptionSummary(exceptions) {
+  if (!exceptions.length) return "";
+  const first = exceptions[0];
+  const cover = state.employees.find((employee) => employee.id === first.coverEmployeeId);
+  const detail = cover ? `Cubre ${cover.name}` : exceptionTypes[first.type] || "Excepción";
+  return `<span class="planning-exception-chip">! ${detail}${exceptions.length > 1 ? ` +${exceptions.length - 1}` : ""}</span>`;
 }
 
 function planningPositionSector(week, section, conflicts) {
@@ -322,7 +527,8 @@ function planningPositionSector(week, section, conflicts) {
         const assignment = week.assignments.find((item) => item.positionId === position.id);
         const employee = assignment ? state.employees.find((item) => item.id === assignment.employeeId) : null;
         const warnings = conflicts.positionWarnings.get(position.id) || [];
-        return `<div class="planning-position-cell ${warnings.length ? "has-warning" : ""}"><button class="planning-position-assignment ${employee ? "assigned" : "empty"} ${warnings.length ? "warning" : ""}" type="button" ${editable ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"} aria-label="${employee ? `Cambiar asignación de ${position.label}: ${employee.name}` : `Asignar empleado a ${position.label}`}">${employee ? `<strong>${employee.name}</strong><small>${employee.role}</small>` : `<span>Sin asignar</span>`}${warnings.length ? `<em>${warnings[0]}</em>` : ""}</button></div>`;
+        const exceptions = positionExceptions(week, position.id);
+        return `<div class="planning-position-cell ${warnings.length ? "has-warning" : ""} ${exceptions.length ? "has-exception" : ""}"><button class="planning-position-assignment ${employee ? "assigned" : "empty"} ${warnings.length ? "warning" : ""} ${exceptions.length ? "exception" : ""}" type="button" ${editable ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"} aria-label="${employee ? `Cambiar asignación de ${position.label}: ${employee.name}` : `Asignar empleado a ${position.label}`}">${employee ? `<strong>${employee.name}</strong><small>${employee.role}</small>` : `<span>Sin asignar</span>`}${positionExceptionSummary(exceptions)}${warnings.length ? `<em>${warnings[0]}</em>` : ""}</button></div>`;
       }).join("")}`).join("")}
     </div></div>
   </section>`;
@@ -518,27 +724,38 @@ function employeeFrancos(employee) {
 
 function requestsPage() {
   const admin = isAdminRole(user.role);
-  const own = admin ? state.requests : state.requests.filter((r) => r.employeeId === user.employeeId);
-  const filtered = requestFilter === "all" ? own : own.filter((r) => r.status === requestFilter);
+  const visibleRequests = (admin ? state.requests : state.requests.filter((r) => r.employeeId === user.employeeId || r.partnerEmployeeId === user.employeeId)).map(normalizeRequestForView);
+  const filtered = visibleRequests.filter((request) => requestMatchesFilter(request, requestFilter));
+  const tabs = [
+    ["all", "Todas"],
+    ["active", "Pendientes"],
+    ["pending", "Pendiente"],
+    ["pendingPartner", "Compañero"],
+    ["partnerRejected", "Rechazadas comp."],
+    ["pendingManager", "Encargada"],
+    ["approved", "Aprobadas"],
+    ["rejected", "Rechazadas"],
+  ];
   return `${pageHeading("GESTIÓN", admin ? "Solicitudes" : "Mis solicitudes", admin ? "Revisá y resolvé los pedidos del equipo." : "Creá pedidos y seguí su resolución.", `<button class="button primary" data-action="new-request">${icons.plus} Nueva solicitud</button>`)}
-    <div class="tabs">${[["all", "Todas"], ["pending", "Pendientes"], ["review", "En revisión"], ["approved", "Aprobadas"], ["rejected", "Rechazadas"]].map(([id, label]) => `<button class="${requestFilter === id ? "active" : ""}" data-action="filter-request" data-filter="${id}">${label}${id === "pending" ? `<b>${own.filter((r) => r.status === "pending").length}</b>` : ""}</button>`).join("")}</div>
+    <div class="tabs">${tabs.map(([id, label]) => `<button class="${requestFilter === id ? "active" : ""}" data-action="filter-request" data-filter="${id}">${label}${id === "active" ? `<b>${visibleRequests.filter((r) => activeRequestStatuses.includes(r.status)).length}</b>` : ""}</button>`).join("")}</div>
     <section class="request-cards">${filtered.map((r) => requestCard(r, admin)).join("") || empty("No hay solicitudes en este estado")}</section>`;
 }
 
 function requestCard(r, admin) {
-  const resolvable = admin && canResolveRequests(user.role) && ["pending", "review"].includes(r.status);
-  return `<article class="request-card"><div class="request-card-top"><span class="request-icon large">${r.type.includes("enfermo") ? "+" : "↔"}</span><div><span class="request-id">${r.id}</span><h3>${r.type}</h3><p>${r.detail}</p></div><span class="badge ${r.status}">${statusText[r.status]}</span></div><div class="request-meta"><span><small>SOLICITANTE</small><strong>${r.employee}</strong></span><span><small>CREADA</small><strong>${r.date}</strong></span><span><small>OBSERVACIÓN</small><strong>${r.note}</strong></span></div>${resolvable ? `<div class="card-actions"><button class="button danger-soft" data-action="resolve" data-id="${r.id}" data-status="rejected">Rechazar</button><button class="button primary" data-action="resolve" data-id="${r.id}" data-status="approved">Aprobar</button></div>` : ""}</article>`;
+  const request = normalizeRequestForView(r);
+  const meta = requestMetaItems(request);
+  return `<article class="request-card"><div class="request-card-top"><span class="request-icon large">${request.type === "absence" ? "+" : "↔"}</span><div><span class="request-id">${escapeHtml(request.id)}</span><h3>${escapeHtml(requestTypes[request.type] || request.type)}</h3><p>${escapeHtml(request.detail)}</p></div><span class="badge ${request.status}">${escapeHtml(statusText[request.status] || request.status)}</span></div><div class="request-meta"><span><small>SOLICITANTE</small><strong>${escapeHtml(request.employee)}</strong></span>${meta.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join("")}</div><div class="card-actions"><button class="button secondary" data-action="view-request" data-id="${request.id}">Ver detalle</button>${admin && canManagerResolveRequest(request) ? `<span class="muted">Requiere revisión</span>` : ""}</div></article>`;
 }
 
 function notificationsPage() {
   return `${pageHeading("CENTRO DE AVISOS", "Notificaciones", `${unreadCount()} novedades sin leer.`, unreadCount() ? `<button class="button secondary" data-action="read-all">Marcar todas como leídas</button>` : "")}
-    <section class="notification-list">${state.notifications.map((n) => `<button class="notification ${n.read ? "read" : ""}" data-action="read-notification" data-id="${n.id}"><span class="notification-symbol ${n.type}">${n.type === "alert" ? "!" : n.type === "schedule" ? "▤" : "↔"}</span><span><strong>${n.title}</strong><p>${n.text}</p><small>${n.time}</small></span>${n.read ? "" : `<i></i>`}</button>`).join("") || empty("No tenés notificaciones")}</section>`;
+    <section class="notification-list">${state.notifications.map((n) => `<button class="notification ${n.read ? "read" : ""}" data-action="read-notification" data-id="${n.id}"><span class="notification-symbol ${n.type}">${n.type === "alert" ? "!" : n.type === "schedule" ? "▤" : "↔"}</span><span><strong>${escapeHtml(n.title)}</strong><p>${escapeHtml(n.text)}</p><small>${escapeHtml(n.time)}</small></span>${n.read ? "" : `<i></i>`}</button>`).join("") || empty("No tenés notificaciones")}</section>`;
 }
 
 function auditPage() {
   if (!canSeeAudit(user.role)) return dashboardPage();
   return `${pageHeading("TRAZABILIDAD", "Auditoría", "Registro de las acciones relevantes del sistema.")}
-    <section class="table-card"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Elemento</th><th>Resultado</th></tr></thead><tbody>${state.auditLogs.map((a) => `<tr><td>${a.time}</td><td><strong>${a.user}</strong></td><td>${a.action}</td><td><span class="sector-pill">${a.entity}</span></td><td><span class="badge active">${a.result}</span></td></tr>`).join("")}</tbody></table></section>
+    <section class="table-card"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Elemento</th><th>Resultado</th></tr></thead><tbody>${state.auditLogs.map((a) => `<tr><td>${escapeHtml(a.time)}</td><td><strong>${escapeHtml(a.user)}</strong></td><td>${escapeHtml(a.action)}</td><td><span class="sector-pill">${escapeHtml(a.entity)}</span></td><td><span class="badge active">${escapeHtml(a.result)}</span></td></tr>`).join("")}</tbody></table></section>
     <button class="reset-link" data-action="reset-demo">Restablecer datos de demostración</button>`;
 }
 
@@ -546,8 +763,48 @@ function modal(content) {
   document.body.insertAdjacentHTML("beforeend", `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true">${content}</section></div>`);
 }
 
+function updateRequestFormSections(form) {
+  if (!form) return;
+  const type = form.elements.type.value;
+  const isChange = ["dayOffChange", "shiftChange"].includes(type);
+  const singleSection = form.querySelector('[data-request-section="single"]');
+  const changeSection = form.querySelector('[data-request-section="change"]');
+  singleSection.hidden = isChange;
+  changeSection.hidden = !isChange;
+  ["targetDate", "targetShift"].forEach((name) => {
+    form.elements[name].required = !isChange;
+  });
+  ["originalDate", "originalShift", "proposedDate", "proposedShift"].forEach((name) => {
+    form.elements[name].required = isChange;
+  });
+  form.elements.partnerEmployeeId.required = isChange;
+}
+
 function newRequestModal() {
-  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">NUEVA SOLICITUD</span><h2>¿Qué necesitás gestionar?</h2><p class="muted">La solicitud quedará registrada y vas a poder seguir su estado.</p><form id="request-form"><label>Tipo<select name="type" required><option>Cambio de turno</option><option>Cambio de franco</option><option>Parte de enfermo</option><option>Licencia</option><option>Vacaciones</option></select></label><label>Fecha o período<input name="detail" placeholder="Ej: viernes 4, turno tarde" required /></label><label>Motivo<textarea name="note" rows="3" placeholder="Contanos brevemente el motivo" required></textarea></label><label class="file-label">Certificado o respaldo (opcional)<input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png" /><span>Adjuntar archivo</span></label><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">Enviar solicitud</button></div></form>`);
+  const activeEmployees = state.employees.filter((employee) => employee.status === "active" && employee.participaEnOperacion !== false && employee.id !== user.employeeId);
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">NUEVA SOLICITUD</span><h2>¿Qué necesitás gestionar?</h2><p class="muted">La solicitud quedará registrada con fecha y turno para automatización futura.</p><form id="request-form"><label>Tipo<select name="type" required>${Object.entries(requestTypes).map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></label><div data-request-section="single"><div class="form-row"><label>Fecha<input name="targetDate" type="date" /></label><label>Turno<select name="targetShift">${shiftOptions.map((shift) => `<option value="${shift}">${shift}</option>`).join("")}</select></label></div></div><div data-request-section="change" hidden><div class="form-row"><label>Fecha original<input name="originalDate" type="date" /></label><label>Turno original<select name="originalShift">${shiftOptions.map((shift) => `<option value="${shift}">${shift}</option>`).join("")}</select></label></div><div class="form-row"><label>Fecha propuesta<input name="proposedDate" type="date" /></label><label>Turno propuesto<select name="proposedShift">${shiftOptions.map((shift) => `<option value="${shift}">${shift}</option>`).join("")}</select></label></div><label>Compañero involucrado<select name="partnerEmployeeId"><option value="">Sin compañero</option>${activeEmployees.map((employee) => `<option value="${employee.id}">${escapeHtml(employee.name)} · ${escapeHtml(employee.role)}</option>`).join("")}</select></label></div><label>Motivo o detalle<textarea name="note" rows="3" placeholder="Contanos brevemente el motivo" required></textarea></label><label class="file-label">Certificado o respaldo (opcional)<input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png" /><span>Adjuntar archivo</span></label><div class="week-form-note"><strong>Datos para aprobación futura</strong><p>La aprobación todavía no modifica la grilla. Estos campos dejan preparada la solicitud para automatizar ese impacto más adelante.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">Enviar solicitud</button></div></form>`);
+  updateRequestFormSections(document.querySelector("#request-form"));
+}
+
+function requestDetailModal(requestId) {
+  const storedRequest = state.requests.find((item) => item.id === requestId);
+  if (!storedRequest) return toast("No se encontró la solicitud.", "error");
+  const request = normalizeRequestForView(storedRequest);
+  if (!canViewRequestDetail(request)) return toast("No tenés permiso para ver esta solicitud.", "error");
+  const rows = [
+    ["Solicitante", request.employee || "Sin solicitante"],
+    ["Tipo", requestTypes[request.type] || request.type],
+    ["Estado", statusText[request.status] || request.status],
+    ...requestMetaItems(request),
+    ["Motivo / detalle", request.note || request.detail || "Sin detalle"],
+  ];
+  const partnerActions = canActAsPartner(request)
+    ? `<button class="button danger-soft" data-action="partner-resolve" data-id="${request.id}" data-status="partnerRejected">Rechazar</button><button class="button primary" data-action="partner-resolve" data-id="${request.id}" data-status="partnerAccepted">Aceptar</button>`
+    : "";
+  const managerActions = isAdminRole(user.role) && canManagerResolveRequest(request)
+    ? `<button class="button danger-soft" data-action="resolve" data-id="${request.id}" data-status="rejected">Rechazar</button><button class="button primary" data-action="resolve" data-id="${request.id}" data-status="approved">Aprobar</button>`
+    : "";
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">SOLICITUD</span><h2>${escapeHtml(request.id)}</h2><p class="muted">Detalle completo para revisión. La aprobación no modifica automáticamente la grilla.</p><div class="request-meta request-detail">${rows.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join("")}</div>${requestImpactPreview(request)}<div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cerrar</button>${partnerActions}${managerActions}</div>`);
 }
 
 function newEmployeeModal() {
@@ -582,6 +839,49 @@ function dayOffModal({ sector, date }) {
   }).join("")}</div>` : ""}</div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">Guardar franco</button></div></form>`);
 }
 
+function weekExceptionModal(exceptionId = "") {
+  const week = state.planningWeek;
+  if (!week || !["draft", "published"].includes(week.status) || !canEditSchedule(user.role)) return;
+  if (!Array.isArray(week.exceptions)) week.exceptions = [];
+  const exception = week.exceptions.find((item) => item.id === exceptionId);
+  const selectedPosition = exception
+    ? week.operationalPositions.find((position) => position.id === exception.positionId)
+    : week.operationalPositions[0];
+  const selectedAssignment = selectedPosition ? week.assignments.find((assignment) => assignment.positionId === selectedPosition.id) : null;
+  const affectedEmployeeValue = exception ? exception.affectedEmployeeId || "unassigned" : selectedAssignment?.employeeId || "unassigned";
+  const activeEmployees = state.employees.filter((employee) => employee.status === "active" && employee.participaEnOperacion !== false);
+  const dates = [...new Set(week.operationalPositions.map((position) => position.date))];
+  const shifts = [...new Set(week.operationalPositions.map((position) => position.shift))];
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">EXCEPCIÓN SEMANAL</span><h2>${exception ? "Editar excepción" : "Registrar excepción"}</h2><p class="muted">Este ajuste queda guardado solo en esta semana. No modifica la grilla base.</p><form id="week-exception-form"><input type="hidden" name="exceptionId" value="${escapeHtml(exception?.id || "")}" /><div class="form-row"><label>Día<select name="date" required>${dates.map((date) => `<option value="${date}" ${selectedPosition?.date === date ? "selected" : ""}>${formatIsoDate(date)}</option>`).join("")}</select></label><label>Turno<select name="shift" required>${shifts.map((shift) => `<option value="${shift}" ${selectedPosition?.shift === shift ? "selected" : ""}>${shift}</option>`).join("")}</select></label></div><label>Puesto<select name="positionId" required>${exceptionPositionOptions(week, selectedPosition?.date, selectedPosition?.shift, selectedPosition?.id)}</select></label><label>Persona afectada<select name="affectedEmployeeId" required><option value="unassigned" ${affectedEmployeeValue === "unassigned" ? "selected" : ""}>Puesto sin persona asignada</option>${activeEmployees.map((employee) => `<option value="${employee.id}" ${affectedEmployeeValue === employee.id ? "selected" : ""}>${escapeHtml(employee.name)} · ${escapeHtml(employee.role)}</option>`).join("")}</select></label><label>Tipo de excepción<select name="type" required>${Object.entries(exceptionTypes).map(([value, label]) => `<option value="${value}" ${exception?.type === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label>Quién cubre el turno<select name="coverEmployeeId"><option value="">Sin cobertura indicada</option>${activeEmployees.map((employee) => `<option value="${employee.id}" ${exception?.coverEmployeeId === employee.id ? "selected" : ""}>${escapeHtml(employee.name)} · ${escapeHtml(employee.role)}</option>`).join("")}</select></label><label>Observación<textarea name="note" rows="3" placeholder="Ej: certificado pendiente, cambio acordado, se deja sin cubrir">${escapeHtml(exception?.note || "")}</textarea></label><div class="week-form-note"><strong>Registro simple</strong><p>La excepción queda visible sobre la celda de la grilla y se puede editar o eliminar. No bloquea la publicación.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${exception ? "Guardar cambios" : "Guardar excepción"}</button></div></form>`);
+}
+
+function exceptionPositionOptions(week, date, shift, selectedId = "") {
+  return week.operationalPositions
+    .filter((position) => (!date || position.date === date) && (!shift || position.shift === shift))
+    .map((position) => `<option value="${position.id}" ${position.id === selectedId ? "selected" : ""}>${position.label} · ${position.sector}${position.floor ? ` · Piso ${position.floor}` : ""}</option>`)
+    .join("");
+}
+
+function updateExceptionPositionOptions(form) {
+  const week = state.planningWeek;
+  const select = form.querySelector('select[name="positionId"]');
+  if (!week || !select) return;
+  const current = select.value;
+  select.innerHTML = exceptionPositionOptions(week, form.elements.date.value, form.elements.shift.value, current);
+  if (![...select.options].some((option) => option.value === current)) select.selectedIndex = 0;
+  updateExceptionAffectedEmployee(form);
+}
+
+function updateExceptionAffectedEmployee(form) {
+  const week = state.planningWeek;
+  if (!week) return;
+  const position = week.operationalPositions.find((item) => item.id === form.elements.positionId.value);
+  const assignment = position ? week.assignments.find((item) => item.positionId === position.id) : null;
+  const affectedSelect = form.querySelector('select[name="affectedEmployeeId"]');
+  if (!affectedSelect || affectedSelect.dataset.touched === "true") return;
+  affectedSelect.value = assignment?.employeeId || "unassigned";
+}
+
 function closeModal() { document.querySelector(".modal-backdrop")?.remove(); }
 function initials(name) { return name.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase(); }
 function formatIsoDate(value) { const [year, month, day] = value.split("-"); return `${day}/${month}/${year}`; }
@@ -593,6 +893,15 @@ function addIsoDays(value, amount) {
 function formatDateTime(value) {
   if (!value) return "";
   return new Intl.DateTimeFormat("es-AR", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
+}
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[char]));
 }
 function hasSameShiftDuplicate(week, position, employeeId) {
   return (week.assignments || []).some((assignment) => {
@@ -628,21 +937,44 @@ document.addEventListener("submit", (event) => {
     const data = new FormData(event.target);
     const employee = state.employees.find((e) => e.id === user.employeeId);
     if (!employee) return toast("El usuario no está vinculado a un empleado.", "error");
-    const request = { id: `SOL-${String(25 + state.requests.length).padStart(3, "0")}`, employee: employee.name, employeeId: employee.id, type: data.get("type"), detail: data.get("detail"), date: "Ahora", status: "pending", note: data.get("note"), requiresPartner: String(data.get("type")).includes("Cambio") };
+    const type = data.get("type");
+    const note = data.get("note").trim();
+    if (!requestTypes[type] || !note) return toast("Completá los datos obligatorios de la solicitud.", "error");
+    const isChange = ["dayOffChange", "shiftChange"].includes(type);
+    const partnerEmployeeId = data.get("partnerEmployeeId");
+    if (isChange && (!data.get("originalDate") || !data.get("proposedDate"))) return toast("Completá fecha original y fecha propuesta.", "error");
+    if (!isChange && !data.get("targetDate")) return toast("Seleccioná la fecha de la solicitud.", "error");
+    if (isChange && !partnerEmployeeId) return toast("Los cambios de franco o turno requieren compañero involucrado.", "error");
+    if (partnerEmployeeId && !state.employees.some((item) => item.id === partnerEmployeeId && item.status === "active" && item.participaEnOperacion !== false)) return toast("El compañero seleccionado no es válido.", "error");
+    const scheduleImpact = isChange
+      ? {
+        original: { date: data.get("originalDate"), shift: data.get("originalShift") },
+        proposed: { date: data.get("proposedDate"), shift: data.get("proposedShift") },
+      }
+      : {
+        target: { date: data.get("targetDate"), shift: data.get("targetShift") },
+      };
+    const detail = isChange
+      ? `${formatIsoDate(scheduleImpact.original.date)} ${scheduleImpact.original.shift} → ${formatIsoDate(scheduleImpact.proposed.date)} ${scheduleImpact.proposed.shift}`
+      : `${formatIsoDate(scheduleImpact.target.date)} · ${scheduleImpact.target.shift}`;
+    const status = isChange ? "pendingPartner" : "pendingManager";
+    const request = { id: `SOL-${String(25 + state.requests.length).padStart(3, "0")}`, employee: employee.name, employeeId: employee.id, type, detail, date: "Ahora", status, note, requiresPartner: isChange, partnerEmployeeId, partnerStatus: isChange ? "pending" : "", scheduleImpact };
     state.requests.unshift(request);
-    state.notifications.unshift({ id: crypto.randomUUID(), title: "Solicitud enviada", text: `${request.type}: ${request.detail}.`, time: "Ahora", type: "request", read: false });
-    audit("Creó una solicitud", request.id, "Pendiente");
+    state.notifications.unshift({ id: crypto.randomUUID(), title: "Solicitud enviada", text: `${requestTypes[request.type]}: ${request.detail}.`, time: "Ahora", type: "request", read: false });
+    audit("Creó una solicitud", request.id, statusText[request.status]);
     closeModal(); persist(); toast("Solicitud enviada correctamente");
   }
   if (event.target.id === "planning-week-form") {
     if (!canEditSchedule(user.role) || state.planningWeek) return;
     const data = new FormData(event.target);
+    const name = data.get("name").trim();
     const startDate = data.get("startDate");
     const endDate = addIsoDays(startDate, 6);
+    if (!name) return toast("Ingresá un nombre para la semana.", "error");
     if (data.get("endDate") && data.get("endDate") !== endDate) return toast("La semana debe durar exactamente 7 días.", "error");
     state.planningWeek = createDraftPlanningWeek({
       id: crypto.randomUUID(),
-      name: data.get("name").trim(),
+      name,
       startDate,
       endDate,
     });
@@ -679,6 +1011,38 @@ document.addEventListener("submit", (event) => {
     else week.daysOff.push({ id: crypto.randomUUID(), date, sector, employeeId, tipo });
     closeModal(); persist(); toast(`Franco ${tipo} cargado para ${employee.name}`);
   }
+  if (event.target.id === "week-exception-form") {
+    const week = state.planningWeek;
+    if (!week || !["draft", "published"].includes(week.status) || !canEditSchedule(user.role)) return;
+    const data = new FormData(event.target);
+    const exceptionId = data.get("exceptionId");
+    const position = week.operationalPositions.find((item) => item.id === data.get("positionId"));
+    const type = data.get("type");
+    const affectedEmployeeId = data.get("affectedEmployeeId") === "unassigned" ? "" : data.get("affectedEmployeeId");
+    const coverEmployeeId = data.get("coverEmployeeId");
+    if (!position || position.date !== data.get("date") || position.shift !== data.get("shift") || !exceptionTypes[type]) return toast("No se pudo guardar la excepción.", "error");
+    if (affectedEmployeeId && !state.employees.some((employee) => employee.id === affectedEmployeeId)) return toast("La persona afectada no es válida.", "error");
+    if (coverEmployeeId && !state.employees.some((employee) => employee.id === coverEmployeeId)) return toast("La cobertura indicada no es válida.", "error");
+    if (!Array.isArray(week.exceptions)) week.exceptions = [];
+    const note = data.get("note").trim();
+    const payload = {
+      positionId: position.id,
+      date: position.date,
+      shift: position.shift,
+      sector: position.sector,
+      affectedEmployeeId,
+      type,
+      coverEmployeeId,
+      note,
+      updatedAt: new Date().toISOString(),
+      updatedBy: { id: user.id || user.username, name: user.name, role: user.role },
+    };
+    const existing = week.exceptions.find((item) => item.id === exceptionId);
+    if (existing) Object.assign(existing, payload);
+    else week.exceptions.push({ id: crypto.randomUUID(), ...payload, createdAt: payload.updatedAt });
+    audit(existing ? "Editó una excepción semanal" : "Registró una excepción semanal", `${formatIsoDate(position.date)} · ${position.label}`, exceptionTypes[type]);
+    closeModal(); persist(); toast(existing ? "Excepción actualizada" : "Excepción registrada");
+  }
   if (event.target.id === "employee-form") {
     return toast("Gestión de empleados deshabilitada en esta versión del MVP.", "error");
   }
@@ -690,12 +1054,30 @@ document.addEventListener("input", (event) => {
     const endDateInput = event.target.form.querySelector('input[name="endDate"]');
     endDateInput.value = event.target.value ? addIsoDays(event.target.value, 6) : "";
   }
+  if (event.target.closest("#week-exception-form") && ["date", "shift", "positionId"].includes(event.target.name)) {
+    updateExceptionPositionOptions(event.target.form);
+  }
+  if (event.target.closest("#request-form") && event.target.name === "type") {
+    updateRequestFormSections(event.target.form);
+  }
 });
 
 document.addEventListener("change", (event) => {
   if (event.target.name === "startDate" && event.target.closest("#planning-week-form")) {
     const endDateInput = event.target.form.querySelector('input[name="endDate"]');
     endDateInput.value = event.target.value ? addIsoDays(event.target.value, 6) : "";
+  }
+  if (event.target.closest("#week-exception-form") && ["date", "shift"].includes(event.target.name)) {
+    updateExceptionPositionOptions(event.target.form);
+  }
+  if (event.target.closest("#week-exception-form") && event.target.name === "positionId") {
+    updateExceptionAffectedEmployee(event.target.form);
+  }
+  if (event.target.closest("#week-exception-form") && event.target.name === "affectedEmployeeId") {
+    event.target.dataset.touched = "true";
+  }
+  if (event.target.closest("#request-form") && event.target.name === "type") {
+    updateRequestFormSections(event.target.form);
   }
 });
 
@@ -716,10 +1098,13 @@ document.addEventListener("click", (event) => {
   if (action === "cycle-shift") { const item = state.draft.find((s) => s.id === button.dataset.id); const states = ["working", "off", "sick", "leave"]; item.state = states[(states.indexOf(item.state) + 1) % states.length]; state.hasDraftChanges = true; saveState(state); render(); }
   if (action === "publish") { state.schedule = structuredClone(state.draft); state.scheduleVersion += 1; state.hasDraftChanges = false; state.notifications.unshift({ id: crypto.randomUUID(), title: "Nueva grilla publicada", text: `La versión ${state.scheduleVersion} ya está disponible.`, time: "Ahora", type: "schedule", read: false }); audit("Publicó la grilla", `Semana 49 · v${state.scheduleVersion}`, "Publicada"); scheduleMode = "official"; persist(); toast(`Grilla versión ${state.scheduleVersion} publicada`); }
   if (action === "new-request") newRequestModal();
+  if (action === "view-request") requestDetailModal(button.dataset.id);
   if (action === "new-employee") newEmployeeModal();
   if (action === "new-planning-week" && canEditSchedule(user.role) && !state.planningWeek) newPlanningWeekModal();
   if (action === "assign-planning-position") assignmentModal(button.dataset.positionId);
   if (action === "add-planning-day-off") dayOffModal({ sector: button.dataset.sector, date: button.dataset.date });
+  if (action === "new-week-exception") weekExceptionModal();
+  if (action === "edit-week-exception") weekExceptionModal(button.dataset.exceptionId);
   if (action === "remove-planning-assignment") {
     const week = state.planningWeek;
     if (!week || !["draft", "published"].includes(week.status) || !canEditSchedule(user.role)) return;
@@ -736,10 +1121,36 @@ document.addEventListener("click", (event) => {
     if (week.daysOff.length === before) return toast("No se encontró el franco para quitar.", "error");
     closeModal(); persist(); toast("Franco quitado");
   }
+  if (action === "remove-week-exception") {
+    const week = state.planningWeek;
+    if (!week || !["draft", "published"].includes(week.status) || !canEditSchedule(user.role)) return;
+    const exception = (week.exceptions || []).find((item) => item.id === button.dataset.exceptionId);
+    if (!exception) return toast("No se encontró la excepción.", "error");
+    week.exceptions = (week.exceptions || []).filter((item) => item.id !== exception.id);
+    audit("Eliminó una excepción semanal", exceptionTypes[exception.type] || "Excepción", "Eliminada");
+    persist(); toast("Excepción eliminada");
+  }
   if (action === "publish-planning-week") publishPlanningWeek();
   if (action === "close-modal") { if (event.target === button || button.classList.contains("modal-close") || button.tagName === "BUTTON") closeModal(); }
   if (action === "filter-request") { requestFilter = button.dataset.filter; render(); }
-  if (action === "resolve") { const request = state.requests.find((r) => r.id === button.dataset.id); if (!["pending", "review"].includes(request.status)) return toast("La solicitud ya fue resuelta", "error"); request.status = button.dataset.status; state.notifications.unshift({ id: crypto.randomUUID(), title: `Solicitud ${statusText[request.status].toLowerCase()}`, text: `${request.id} · ${request.type}.`, time: "Ahora", type: "request", read: false }); audit(`${request.status === "approved" ? "Aprobó" : "Rechazó"} una solicitud`, request.id, statusText[request.status]); persist(); toast(`Solicitud ${statusText[request.status].toLowerCase()}`); }
+  if (action === "partner-resolve") {
+    const request = state.requests.find((r) => r.id === button.dataset.id);
+    if (!request || request.partnerEmployeeId !== user.employeeId || request.status !== "pendingPartner") return toast("No se puede resolver esta solicitud.", "error");
+    const accepted = button.dataset.status === "partnerAccepted";
+    request.partnerStatus = accepted ? "accepted" : "rejected";
+    request.status = accepted ? "pendingManager" : "partnerRejected";
+    state.notifications.unshift({ id: crypto.randomUUID(), title: statusText[request.status], text: `${request.id} · ${requestTypes[normalizeRequestForView(request).type]}.`, time: "Ahora", type: "request", read: false });
+    audit(`${accepted ? "Aceptó" : "Rechazó"} una solicitud como compañero`, request.id, statusText[request.status]);
+    closeModal(); persist(); toast(statusText[request.status]);
+  }
+  if (action === "resolve") {
+    const request = state.requests.find((r) => r.id === button.dataset.id);
+    if (!request || !canManagerResolveRequest(normalizeRequestForView(request))) return toast("La solicitud no está lista para resolver.", "error");
+    request.status = button.dataset.status;
+    state.notifications.unshift({ id: crypto.randomUUID(), title: `Solicitud ${statusText[request.status].toLowerCase()}`, text: `${request.id} · ${requestTypes[normalizeRequestForView(request).type]}.`, time: "Ahora", type: "request", read: false });
+    audit(`${request.status === "approved" ? "Aprobó" : "Rechazó"} una solicitud`, request.id, statusText[request.status]);
+    closeModal(); persist(); toast(`Solicitud ${statusText[request.status].toLowerCase()}`);
+  }
   if (action === "toggle-employee") toast("Gestión de empleados deshabilitada en esta versión del MVP.", "error");
   if (action === "read-notification") { const notification = state.notifications.find((n) => n.id === button.dataset.id); notification.read = true; persist(); }
   if (action === "read-all") { state.notifications.forEach((n) => n.read = true); persist(); toast("Notificaciones marcadas como leídas"); }

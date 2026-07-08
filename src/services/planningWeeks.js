@@ -46,5 +46,6 @@ export function createDraftPlanningWeek({ id, name, startDate, endDate }) {
     assignments: [],
     daysOff: [],
     coverages: [],
+    exceptions: [],
   };
 }
