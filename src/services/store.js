@@ -50,7 +50,7 @@ const normalizeRequest = (request) => {
     type,
     status,
     partnerEmployeeId: request.partnerEmployeeId || "",
-    partnerStatus: request.partnerStatus || (request.partnerEmployeeId ? "pending" : ""),
+    partnerStatus: request.partnerStatus || (request.status === "partnerAccepted" ? "accepted" : request.partnerEmployeeId ? "pending" : ""),
     scheduleImpact: request.scheduleImpact || {},
   };
 };

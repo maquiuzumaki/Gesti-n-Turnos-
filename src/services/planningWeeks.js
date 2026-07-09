@@ -1,9 +1,10 @@
 const OPERATIONAL_POSITION_TEMPLATES = [
-  { id: "kitchen-cook-morning-1", sector: "Cocina", shift: "Mañana", label: "Cocinero Mañana 1", slot: 1, floor: null },
-  { id: "kitchen-cook-morning-2", sector: "Cocina", shift: "Mañana", label: "Cocinero Mañana 2", slot: 2, floor: null },
-  { id: "kitchen-assistant-morning", sector: "Cocina", shift: "Mañana", label: "Peón Cocina Mañana", slot: null, floor: null },
-  { id: "kitchen-cook-afternoon", sector: "Cocina", shift: "Tarde", label: "Cocinero Tarde", slot: null, floor: null },
-  { id: "kitchen-assistant-afternoon", sector: "Cocina", shift: "Tarde", label: "Peón Cocina Tarde", slot: null, floor: null },
+  { id: "kitchen-cook-morning-1", sector: "Cocina", shift: "Mañana", label: "Cocina Mañana · Puesto 1", slot: 1, floor: null, optional: true },
+  { id: "kitchen-cook-morning-2", sector: "Cocina", shift: "Mañana", label: "Cocina Mañana · Puesto 2", slot: 2, floor: null, optional: true },
+  { id: "kitchen-assistant-morning", sector: "Cocina", shift: "Mañana", label: "Cocina Mañana · Puesto 3", slot: 3, floor: null, optional: true },
+  { id: "kitchen-cook-afternoon", sector: "Cocina", shift: "Tarde", label: "Cocina Tarde · Puesto 1", slot: 1, floor: null, optional: true },
+  { id: "kitchen-assistant-afternoon", sector: "Cocina", shift: "Tarde", label: "Cocina Tarde · Puesto 2", slot: 2, floor: null, optional: true },
+  { id: "kitchen-extra-afternoon", sector: "Cocina", shift: "Tarde", label: "Cocina Tarde · Puesto 3", slot: 3, floor: null, optional: true },
   { id: "floor-1-morning", sector: "Pisos", shift: "Mañana", label: "Piso 1 Mañana", slot: null, floor: 1 },
   { id: "floor-2-morning", sector: "Pisos", shift: "Mañana", label: "Piso 2 Mañana", slot: null, floor: 2 },
   { id: "floor-3-morning", sector: "Pisos", shift: "Mañana", label: "Piso 3 Mañana", slot: null, floor: 3 },
@@ -31,8 +32,40 @@ function createOperationalPositions(weekId, startDate) {
       label: template.label,
       slot: template.slot,
       floor: template.floor,
+      optional: Boolean(template.optional),
     }));
   }).flat();
+}
+
+export function ensureKitchenPlanningSlots(week) {
+  if (!week?.operationalPositions?.length) return week;
+  const kitchenTemplates = OPERATIONAL_POSITION_TEMPLATES.filter((template) => template.sector === "Cocina");
+  const dates = [...new Set(week.operationalPositions.map((position) => position.date))];
+  dates.forEach((date) => {
+    const dayIndex = week.operationalPositions.find((position) => position.date === date)?.dayIndex || 0;
+    kitchenTemplates.forEach((template) => {
+      const existing = week.operationalPositions.find((position) => position.date === date && position.templateId === template.id);
+      if (existing) {
+        existing.label = template.label;
+        existing.slot = template.slot;
+        existing.optional = true;
+      } else {
+        week.operationalPositions.push({
+          id: `${week.id}:${date}:${template.id}`,
+          templateId: template.id,
+          date,
+          dayIndex,
+          sector: template.sector,
+          shift: template.shift,
+          label: template.label,
+          slot: template.slot,
+          floor: template.floor,
+          optional: true,
+        });
+      }
+    });
+  });
+  return week;
 }
 
 export function createDraftPlanningWeek({ id, name, startDate, endDate }) {
