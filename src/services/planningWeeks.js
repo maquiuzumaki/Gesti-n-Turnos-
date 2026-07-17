@@ -2,6 +2,7 @@ const OPERATIONAL_POSITION_TEMPLATES = [
   { id: "kitchen-cook-morning-1", sector: "Cocina", shift: "Mañana", label: "Cocina Mañana · Puesto 1", slot: 1, floor: null, optional: true },
   { id: "kitchen-cook-morning-2", sector: "Cocina", shift: "Mañana", label: "Cocina Mañana · Puesto 2", slot: 2, floor: null, optional: true },
   { id: "kitchen-assistant-morning", sector: "Cocina", shift: "Mañana", label: "Cocina Mañana · Puesto 3", slot: 3, floor: null, optional: true },
+  { id: "kitchen-extra-morning", sector: "Cocina", shift: "Mañana", label: "Cocina Mañana · Apoyo", slot: 4, floor: null, optional: true },
   { id: "kitchen-cook-afternoon", sector: "Cocina", shift: "Tarde", label: "Cocina Tarde · Puesto 1", slot: 1, floor: null, optional: true },
   { id: "kitchen-assistant-afternoon", sector: "Cocina", shift: "Tarde", label: "Cocina Tarde · Puesto 2", slot: 2, floor: null, optional: true },
   { id: "kitchen-extra-afternoon", sector: "Cocina", shift: "Tarde", label: "Cocina Tarde · Puesto 3", slot: 3, floor: null, optional: true },

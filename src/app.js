@@ -1,16 +1,20 @@
-import { loadState, resetState, saveState } from "./services/store.js?v=20260709-1";
-import { canEditSchedule, canManageEmployees, canResolveRequests, canSeeAudit, isAdminRole, roleLabel } from "./services/permissions.js?v=20260709-1";
-import { createDraftPlanningWeek, ensureKitchenPlanningSlots } from "./services/planningWeeks.js?v=20260708-1";
-import { applyApprovedAbsenceOrLeave, applyApprovedShiftChange, revokePlanningApplication } from "./services/planningEngine.js?v=20260709-4";
-import { demoUsers as canonicalDemoUsers } from "./data/mockData.js?v=20260706-3";
+import { hydrateStateFromJson, loadState, resetState, saveState, serializeState, STATE_FILE_NAME } from "./services/store.js?v=20260714-13";
+import { canEditApplications, canEditSchedule, canManageEmployees, canResolveRequests, canSeeAudit, isAdminRole, roleLabel } from "./services/permissions.js?v=20260712-3";
+import { createDraftPlanningWeek, ensureKitchenPlanningSlots } from "./services/planningWeeks.js?v=20260716-1";
+import { applyApprovedAbsenceOrLeave, applyApprovedShiftChange, applyGustavoJulioException, buildDailyDaysOffSummary, buildWeeklyAvailabilityMap, generateFloorCoverageAssignments, generateHabitualAssignments, generateKitchenMorningCollaborationAssignments, revokePlanningApplication } from "./services/planningEngine.js?v=20260715-5";
 
 const app = document.querySelector("#app");
 const toastRegion = document.querySelector("#toast-region");
-let state = loadState();
+let state = await loadState();
 const SESSION_KEY = "uzumaki-user-v4";
 let user = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null");
+if (user && !state.users.some((item) => item.id === user.id || item.username === user.username)) {
+  user = null;
+  sessionStorage.removeItem(SESSION_KEY);
+}
 let page = "dashboard";
 let scheduleMode = "official";
+let planningView = "library";
 let employeeSearch = "";
 let requestFilter = "all";
 
@@ -46,6 +50,15 @@ const requestTypeLegacyMap = {
   "Cambio de turno": "shiftChange",
 };
 const shiftOptions = ["Mañana", "Tarde"];
+const companyRoleOptions = [
+  "Personal de camarería",
+  "Personal de cocina",
+  "Ayudante de cocina",
+  "Personal franquero",
+  "Encargada/Nutrición",
+  "Supervisión",
+];
+const operationalCompanyRoles = ["Personal de camarería", "Personal de cocina", "Ayudante de cocina", "Personal franquero"];
 const activeRequestStatuses = ["pending", "pendingPartner", "pendingManager", "review"];
 const exceptionTypes = {
   leave: "Licencia",
@@ -69,9 +82,20 @@ function audit(action, entity, result) {
   state.auditLogs.unshift({ id: crypto.randomUUID(), time: "Ahora", user: user.name, action, entity, result });
 }
 
-function persist() {
-  saveState(state);
-  render();
+async function persist(options = {}) {
+  try {
+    return await saveState(state, options);
+  } catch (error) {
+    if (options.requireFile) throw error;
+    toast(error.code === "stateConflict" ? error.message : "No se pudieron guardar los cambios.", "error");
+    return { local: false, file: false, error };
+  } finally {
+    render();
+  }
+}
+
+function persistenceActions() {
+  return `<div class="heading-actions"><button class="button secondary" data-action="export-state-json">Exportar JSON</button>${canEditApplications(user.role) ? `<button class="button primary" data-action="import-state-json">Importar JSON</button>` : ""}</div>`;
 }
 
 function render() {
@@ -91,24 +115,21 @@ function renderLogin(error = "") {
       <div class="brand-mark large"><img src="./ICONO.webp" alt="" /></div>
       <div class="login-copy">
         <span class="eyebrow light">Plataforma de gestión operativa para servicios de alimentación</span>
-        <h1>“El trabajo duro es inútil para aquellos que no creen en sí mismos.”</h1>
-        <p>Planificá turnos, resolvé solicitudes y mantené la operación bajo control, sin perder el hilo.</p>
       </div>
-      <div class="login-proof"><span>✓</span><p><strong>Semana organizada</strong><br />Menos mensajes sueltos, más claridad.</p></div>
     </section>
     <section class="login-panel">
       <form class="login-card" id="login-form">
         <div class="mobile-logo"><span class="brand-mark"><img src="./ICONO.webp" alt="" /></span><strong>Uzumaki</strong></div>
         <span class="eyebrow">BIENVENIDA</span>
         <h2>Ingresá a tu espacio</h2>
-        <p class="muted">Usá el acceso de demostración.</p>
+        <p class="muted">Usá tu usuario y contraseña.</p>
         ${error ? `<div class="form-error">${error}</div>` : ""}
         <label>Usuario<input name="username" autocomplete="username" value="maqui" required /></label>
         <label>Contraseña<div class="password-field"><input name="password" type="password" autocomplete="current-password" value="demo123" required /><button type="button" class="text-button" data-action="toggle-password">Ver</button></div></label>
         <button class="button primary wide" type="submit">Ingresar <span>→</span></button>
         <div class="demo-access">
-          <p>Accesos rápidos · clave <code>demo123</code></p>
-          <div>${canonicalDemoUsers.map((item) => `<button type="button" class="chip" data-action="demo-login" data-username="${item.username}">${item.username}</button>`).join("")}</div>
+          <p>Accesos rápidos</p>
+          <div>${state.users.map((item) => `<button type="button" class="chip" data-action="demo-login" data-username="${item.username}">${item.username}</button>`).join("")}</div>
         </div>
       </form>
     </section>
@@ -161,6 +182,7 @@ function dashboardPage() {
           <span class="eyebrow">ESTADO DEL SISTEMA</span>
           <h2>Base de datos simulada</h2>
         </div>
+        ${persistenceActions()}
       </div>
       <div class="metric-grid" style="margin-top: 12px;">
         ${metric("Roles operativos", Object.keys(state.catalogs.rolesOperativos).length, "Catálogo base", "blue", "♙")}
@@ -182,13 +204,7 @@ function dashboardPage() {
           <p>${Object.values(state.catalogs.pisos).map((piso) => `Piso ${piso.numero}`).join(" · ")}</p>
         </div>
       </div>
-    </section>
-    <section class="dashboard-grid single-panel">
-      <article class="panel"><div class="panel-head"><div><span class="eyebrow">PARA RESOLVER</span><h2>Solicitudes recientes</h2></div><button class="text-link" data-page="requests">Ver todas</button></div>
-        <div class="request-list">${state.requests.filter((r) => activeRequestStatuses.includes(r.status)).slice(0, 3).map(requestMini).join("") || empty("No hay solicitudes pendientes")}</div>
-      </article>
-    </section>
-    <section class="panel activity-strip"><div><span class="eyebrow">ACTIVIDAD RECIENTE</span><h2>Lo último en Uzumaki</h2></div>${state.auditLogs.slice(0, 3).map((a) => `<div class="activity-item"><span class="activity-dot"></span><p><strong>${a.user}</strong> ${a.action.toLowerCase()}<small>${a.time} · ${a.entity}</small></p></div>`).join("")}<button class="icon-button" data-page="audit">→</button></section>`;
+    </section>`;
 }
 
 function staffDashboard() {
@@ -215,7 +231,7 @@ function staffDashboard() {
           <span><small>Rol operativo</small><strong>${employee.role}</strong></span>
           <span><small>Turno habitual</small><strong>${employee.turno || "Flexible"}</strong></span>
           <span><small>Sector principal</small><strong>${employee.sector || "No operativo"}</strong></span>
-          <span><small>Ubicación</small><strong>${employee.piso ? `Piso ${employee.piso}` : employee.role === "Franquera" ? "Cobertura flexible" : "Sin piso fijo"}</strong></span>
+          <span><small>Ubicación</small><strong>${employee.piso ? `Piso ${employee.piso}` : employee.role === "Personal franquero" ? "Cobertura flexible" : "Sin piso fijo"}</strong></span>
         </div>
       </article>
       <article class="panel"><div class="panel-head"><div><span class="eyebrow">GRILLA PUBLICADA</span><h2>Próximas asignaciones</h2></div></div>
@@ -255,11 +271,6 @@ function staffDayOffCard(dayOff) {
 
 function metric(label, value, meta, color, icon) {
   return `<article class="metric-card"><div class="metric-icon ${color}">${icon}</div><div><span>${label}</span><strong>${value}</strong><small>${meta}</small></div></article>`;
-}
-
-function requestMini(r) {
-  const request = normalizeRequestForView(r);
-  return `<button class="request-mini" data-page="requests"><span class="request-icon">${request.type === "absence" ? "+" : "↔"}</span><span><strong>${escapeHtml(request.employee)}</strong><small>${escapeHtml(requestTypes[request.type] || request.type)} · ${escapeHtml(request.detail)}</small></span><span class="badge ${request.status}">${escapeHtml(statusText[request.status] || request.status)}</span></button>`;
 }
 
 function normalizeRequestForView(request) {
@@ -316,7 +327,7 @@ function requestImpactRows(rows) {
 }
 
 function requestCoverSelector(request) {
-  if (!isAdminRole(user.role) || request.status !== "pendingManager" || !["absence", "leave"].includes(request.type)) return "";
+  if (!canEditApplications(user.role) || request.status !== "pendingManager" || !["absence", "leave"].includes(request.type)) return "";
   const options = state.employees
     .filter((employee) => employee.status === "active" && employee.participaEnOperacion !== false && employee.id !== request.employeeId)
     .map((employee) => `<option value="${employee.id}">${escapeHtml(employee.name)} · ${escapeHtml(employee.role)}</option>`)
@@ -329,7 +340,7 @@ function insufficientImpactPreview() {
 }
 
 function requestImpactPreview(request) {
-  if (!isAdminRole(user.role) || request.status !== "pendingManager") return "";
+  if (!canEditApplications(user.role) || request.status !== "pendingManager") return "";
   const impact = request.scheduleImpact || {};
   let content = "";
   if (["absence", "leave"].includes(request.type)) {
@@ -418,8 +429,11 @@ function planningWeekStatusIcon(status) {
 }
 
 function planningWeekLifecycleActions(week) {
+  const backButton = `<button class="button secondary" data-action="open-planning-library">← Grillas almacenadas</button>`;
+  const saveButton = `<button class="button secondary" data-action="save-planning-week">Guardar</button>`;
+  const suggestButton = `<button class="button secondary magic-pulse" data-action="generate-planning-proposal">Generar propuesta</button>`;
   const publishButton = `<button class="button primary" data-action="publish-planning-week">${week.status === "paused" ? "Republicar" : "Publicar grilla"}</button>`;
-  const commonActions = `<button class="button secondary" data-action="new-week-exception">Registrar excepción</button>`;
+  const commonActions = `${backButton}${suggestButton}${saveButton}<button class="button secondary" data-action="new-week-exception">Registrar excepción</button>`;
   if (week.status === "published") {
     return `<div class="heading-actions">${commonActions}<button class="button secondary" data-action="pause-planning-week">Pausar publicación</button><button class="button secondary" data-action="draft-planning-week">Volver a borrador</button><button class="button danger-soft" data-action="delete-planning-week">Eliminar grilla</button></div>`;
   }
@@ -430,6 +444,7 @@ function planningWeekLifecycleActions(week) {
 }
 
 function schedulePage() {
+  if (canEditSchedule(user.role) && planningView === "library") return planningLibraryPage();
   if (state.planningWeek) return planningWeekPage();
   if (!state.schedule.length) return planningWeekPage();
   const canEdit = canEditSchedule(user.role);
@@ -448,6 +463,45 @@ function schedulePage() {
       return `<article class="day-column"><header><span>${day.split(" ")[0]}</span><strong>${day.split(" ")[1]}</strong><small>${shifts.length} asignados</small></header><div>${shifts.map((s) => shiftCard(s, scheduleMode === "draft" && canEdit)).join("") || `<div class="no-shift">Franco<br /><small>Sin asignación</small></div>`}</div></article>`;
     }).join("")}</section>
     ${!mine ? `<div class="legend"><span><i class="working"></i> Trabaja</span><span><i class="sick"></i> Parte de enfermo</span><span><i class="leave"></i> Licencia</span><span><i class="off"></i> Franco</span></div>` : ""}`;
+}
+
+function planningSnapshots() {
+  return (state.weeklySchedules || [])
+    .filter((week) => week && typeof week === "object" && week.id)
+    .sort((a, b) => (b.savedAt || b.updatedAt || b.startDate || "").localeCompare(a.savedAt || a.updatedAt || a.startDate || ""));
+}
+
+function planningWeekHasUnsavedChanges(week) {
+  const stored = (state.weeklySchedules || []).find((item) => item.id === week?.id);
+  if (!week || !stored) return Boolean(week);
+  return JSON.stringify(week) !== JSON.stringify(stored);
+}
+
+function planningLibraryPage() {
+  const canCreate = canEditSchedule(user.role);
+  const weeks = planningSnapshots();
+  const currentIsSaved = state.planningWeek && !planningWeekHasUnsavedChanges(state.planningWeek);
+  const currentNotice = state.planningWeek
+    ? `<div class="planning-library-current"><div><strong>${escapeHtml(state.planningWeek.name)}</strong><small>${currentIsSaved ? "La versión en edición ya está almacenada." : "Tiene cambios aún no guardados en la base."}</small></div><button class="button secondary" data-action="open-current-planning">Abrir edición</button></div>`
+    : "";
+  return `${pageHeading("PLANIFICACIÓN SEMANAL", "Grillas almacenadas", "Consultá semanas anteriores, retomá un borrador o creá una nueva planificación.", canCreate ? `<button class="button primary" data-action="new-planning-week">${icons.plus} Nueva grilla</button>` : "")}
+    ${currentNotice}
+    <section class="planning-library" aria-label="Grillas guardadas">
+      <div class="planning-library-head"><div><span class="eyebrow">HISTORIAL</span><h2>${weeks.length ? `${weeks.length} grillas guardadas` : "Todavía no hay grillas guardadas"}</h2></div><span class="planning-library-file">${STATE_FILE_NAME}</span></div>
+      ${weeks.length ? `<div class="planning-library-list">${weeks.map(planningLibraryItem).join("")}</div>` : empty("Guardá una planificación para que quede disponible aquí.")}
+    </section>`;
+}
+
+function planningLibraryItem(week) {
+  const assigned = (week.assignments || []).length;
+  const total = (week.operationalPositions || []).length;
+  const isCurrent = state.planningWeek?.id === week.id;
+  return `<article class="planning-library-item ${isCurrent ? "current" : ""}">
+    <div class="planning-library-icon">▦</div>
+    <div class="planning-library-main"><strong>${escapeHtml(week.name)}</strong><small>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)} · ${assigned}/${total} puestos asignados</small>${week.savedAt ? `<small>Guardada ${formatDateTime(week.savedAt)}</small>` : ""}</div>
+    <span class="week-status ${week.status || "draft"}">${planningWeekStatusLabel(week.status)}</span>
+    <button class="button secondary" data-action="open-stored-planning" data-week-id="${week.id}">${isCurrent ? "Abrir" : "Ver grilla"}</button>
+  </article>`;
 }
 
 function planningWeekPage() {
@@ -469,7 +523,10 @@ function planningWeekPage() {
   }
   const assignmentCount = week.assignments.length;
   const emptyPositionCount = week.operationalPositions.length - assignmentCount;
-  const daysOffCount = week.daysOff?.length || 0;
+  const availabilityMap = buildWeeklyAvailabilityMap(state.employees, week, { requests: state.requests });
+  const daysOffSummary = buildDailyDaysOffSummary({ employees: state.employees, week, availabilityMap });
+  const visibleDaysOffCount = Object.values(daysOffSummary).reduce((total, sectorMap) => total + Object.values(sectorMap).reduce((sectorTotal, records) => sectorTotal + records.length, 0), 0);
+  const manualDaysOffCount = week.daysOff?.length || 0;
   const exceptionCount = week.exceptions?.length || 0;
   const conflicts = detectPlanningConflicts(week);
   const isPublished = week.status === "published";
@@ -477,22 +534,31 @@ function planningWeekPage() {
   const statusLabel = planningWeekStatusLabel(week.status);
   const publishAction = canCreate ? planningWeekLifecycleActions(week) : "";
   return `${pageHeading("PLANIFICACIÓN SEMANAL", week.name, `${formatIsoDate(week.startDate)} — ${formatIsoDate(week.endDate)}`, publishAction)}
-    <section class="week-lifecycle-card ${planningWeekStatusClass(week.status)}">
-      <div class="week-lifecycle-head"><span class="week-state-icon">${planningWeekStatusIcon(week.status)}</span><div><span class="eyebrow">${isPublished ? "GRILLA PUBLICADA" : isPaused ? "GRILLA PAUSADA" : "SEMANA CREADA"}</span><h2>${escapeHtml(week.name)}</h2><p>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)}${isPublished ? ` · Publicada ${formatDateTime(week.publishedAt)} por ${escapeHtml(week.publishedBy?.name || "Usuario")}` : isPaused ? " · No visible para el personal" : ""}</p></div><span class="week-status ${week.status}">${statusLabel}</span></div>
-      <div class="week-lifecycle-flow" aria-label="Ciclo de vida inicial"><span class="complete"><i>✓</i><b>Sin crear</b></span><em>→</em><span class="${isPublished || isPaused ? "complete" : "active"}"><i>${isPublished || isPaused ? "✓" : "2"}</i><b>Borrador</b></span><em>→</em><span class="${isPublished ? "active" : isPaused ? "paused" : ""}"><i>${isPublished ? "✓" : isPaused ? "Ⅱ" : "3"}</i><b>${isPaused ? "Pausada" : "Publicada"}</b></span></div>
-      <div class="week-empty-canvas">
-        <span class="week-empty-symbol">▦</span><div><h3>${isPublished ? "Grilla publicada editable" : isPaused ? "Grilla no visible para el personal" : "Grilla lista para completar"}</h3><p>${assignmentCount} puestos asignados, ${emptyPositionCount} sin asignar, ${daysOffCount} francos manuales y ${exceptionCount} excepciones semanales. ${isPublished ? "La encargada puede ajustar la grilla cuando el servicio lo requiera." : isPaused ? "La encargada conserva los datos y puede volver a borrador, eliminar o republicar." : "Las coberturas continúan vacías."}</p></div>
+    <section class="planning-google-panel ${planningWeekStatusClass(week.status)}">
+      <div class="planning-google-head">
+        <div><span class="eyebrow">${isPublished ? "PUBLICADA" : isPaused ? "PAUSADA" : "BORRADOR"}</span><h2>${escapeHtml(week.name)}</h2><p>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)}${week.savedAt ? ` · Guardada ${formatDateTime(week.savedAt)}` : ""}</p></div>
+        <span class="week-status ${week.status}">${statusLabel}</span>
+      </div>
+      <div class="planning-google-stats" aria-label="Resumen de la grilla">
+        ${planningGoogleStat("Asignados", assignmentCount, `${week.operationalPositions.length} puestos`)}
+        ${planningGoogleStat("Pendientes", emptyPositionCount, emptyPositionCount ? "Revisar" : "Completa")}
+        ${planningGoogleStat("Francos", visibleDaysOffCount, visibleDaysOffCount ? "Calculados" : "Sin francos")}
+        ${planningGoogleStat("Advertencias", conflicts.total, conflicts.total ? "Atención" : "Sin conflictos")}
       </div>
       ${planningConflictPanel(conflicts)}
       ${weeklyExceptionsPanel(week, true)}
-      ${planningWeekStructure(week, conflicts)}
+      ${planningWeekStructure(week, conflicts, true, daysOffSummary)}
       <div class="week-empty-collections" aria-label="Contenido inicial de la semana">
         <span><b>Puestos operativos</b><small>${week.operationalPositions.length} puestos</small></span>
         <span><b>Asignaciones</b><small>${assignmentCount} manuales</small></span>
-        <span><b>Francos</b><small>${daysOffCount ? `${daysOffCount} manuales` : "Vacío"}</small></span>
+        <span><b>Francos</b><small>${visibleDaysOffCount ? `${visibleDaysOffCount} visibles · ${manualDaysOffCount} manuales` : "Vacío"}</small></span>
         <span><b>Excepciones</b><small>${exceptionCount ? `${exceptionCount} ajustes` : "Vacío"}</small></span>
       </div>
     </section>`;
+}
+
+function planningGoogleStat(label, value, meta) {
+  return `<span class="planning-google-stat"><small>${label}</small><strong>${value}</strong><em>${meta}</em></span>`;
 }
 
 function staffPublishedPlanningWeekPage(week) {
@@ -509,11 +575,17 @@ function staffPublishedPlanningWeekPage(week) {
     </section>`;
 }
 
-function planningWeekStructure(week, conflicts, showExceptions = true) {
+function planningWeekStructure(week, conflicts, showExceptions = true, providedDaysOffSummary = null) {
+  const daysOffSummary = providedDaysOffSummary || buildDailyDaysOffSummary({
+    employees: state.employees,
+    week,
+    availabilityMap: buildWeeklyAvailabilityMap(state.employees, week, { requests: state.requests }),
+  });
   return `<div class="planning-position-sectors" aria-label="Puestos operativos">
-    ${planningPositionSector(week, { sector: "Cocina", key: "kitchen", icon: "🍳", eyebrow: "SECTOR OPERATIVO", description: "Cinco puestos diarios organizados por turno." }, conflicts, showExceptions)}
+    ${planningPositionSector(week, { sector: "Cocina", key: "kitchen", icon: "🍳", eyebrow: "SECTOR OPERATIVO", description: "Puestos operativos y espacios de apoyo por turno." }, conflicts, showExceptions)}
+    ${planningDaysOffSector(week, "Cocina", daysOffSummary, conflicts)}
     ${planningPositionSector(week, { sector: "Pisos", key: "floors", icon: "🏥", eyebrow: "COBERTURA POR PISO", description: "Seis puestos diarios para los tres pisos y ambos turnos." }, conflicts, showExceptions)}
-    ${planningDaysOffSection(week, conflicts)}
+    ${planningDaysOffSector(week, "Pisos", daysOffSummary, conflicts)}
   </div>`;
 }
 
@@ -556,7 +628,30 @@ function positionExceptionSummary(exceptions) {
 }
 
 function isOptionalPlanningPosition(position) {
-  return position.optional === true || position.sector === "Cocina";
+  return ["kitchen-extra-morning", "kitchen-extra-afternoon"].includes(position?.templateId);
+}
+
+function isBaseKitchenPosition(position) {
+  return position?.sector === "Cocina" && !isOptionalPlanningPosition(position);
+}
+
+function planningSpecialChip(assignment, position, employee, visible) {
+  if (!visible || !assignment || !position || !employee) return "";
+  if (assignment.assignmentType === "coverage" && position.sector === "Pisos" && ["emp-franquera-debora", "emp-franquera-lucila"].includes(employee.id)) {
+    return `<span class="planning-assignment-chip franchise">Franquera</span>`;
+  }
+  if (assignment.assignmentType === "collaboration" && position.templateId === "kitchen-extra-morning" && ["emp-franquera-debora", "emp-franquera-lucila"].includes(employee.id)) {
+    return `<span class="planning-assignment-chip kitchen-support">Apoyo en Cocina</span>`;
+  }
+  return "";
+}
+
+function emptyPositionState(position, warnings) {
+  if (!position) return "";
+  if (position.sector === "Pisos") return `<span class="planning-empty-state critical">Sin cobertura</span>`;
+  if (isOptionalPlanningPosition(position)) return `<span class="planning-empty-state optional">Opcional</span>`;
+  if (isBaseKitchenPosition(position)) return `<span class="planning-empty-state pending">Pendiente operativo</span>`;
+  return warnings.length ? "" : `<span class="planning-empty-state pending">Pendiente</span>`;
 }
 
 function planningPositionSector(week, section, conflicts, showExceptions = true) {
@@ -567,6 +662,7 @@ function planningPositionSector(week, section, conflicts, showExceptions = true)
     .sort((a, b) => a.shift.localeCompare(b.shift) || (a.slot || 0) - (b.slot || 0) || a.label.localeCompare(b.label));
   const dayNames = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
+  const showSpecialChips = canEditSchedule(user.role);
   return `<section class="planning-position-sector reference-sector reference-sector-${section.key}" aria-labelledby="planning-${section.key}-title">
     <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">${section.icon}</span><div><span class="reference-sector-eyebrow">${section.eyebrow}</span><h2 id="planning-${section.key}-title">${section.sector}</h2><p>${section.description}</p></div></header>
     <div class="planning-position-board"><div class="planning-position-grid">
@@ -578,33 +674,34 @@ function planningPositionSector(week, section, conflicts, showExceptions = true)
         const employee = assignment ? state.employees.find((item) => item.id === assignment.employeeId) : null;
         const warnings = position ? conflicts.positionWarnings.get(position.id) || [] : [];
         const exceptions = showExceptions && position ? positionExceptions(week, position.id) : [];
-        return `<div class="planning-position-cell ${warnings.length ? "has-warning" : ""} ${exceptions.length ? "has-exception" : ""}"><button class="planning-position-assignment ${employee ? "assigned" : "empty"} ${warnings.length ? "warning" : ""} ${exceptions.length ? "exception" : ""}" type="button" ${editable && position ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"} aria-label="${employee ? `Cambiar asignación de ${position.label}: ${employee.name}` : `Asignar empleado a ${position?.label || row.label}`}">${employee ? `<strong>${employee.name}</strong><small>${employee.role}</small>` : ""}${positionExceptionSummary(exceptions)}${warnings.length ? `<em>${warnings[0]}</em>` : ""}</button></div>`;
+        const emptyState = !employee ? emptyPositionState(position, warnings) : "";
+        const specialChip = planningSpecialChip(assignment, position, employee, showSpecialChips);
+        return `<div class="planning-position-cell ${warnings.length ? "has-warning" : ""} ${exceptions.length ? "has-exception" : ""}"><button class="planning-position-assignment ${employee ? "assigned" : "empty"} ${warnings.length ? "warning" : ""} ${exceptions.length ? "exception" : ""} ${!employee && position?.sector === "Pisos" ? "critical-empty" : ""} ${!employee && isOptionalPlanningPosition(position) ? "optional-empty" : ""}" type="button" ${editable && position ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"} aria-label="${employee ? `Cambiar asignación de ${position.label}: ${employee.name}` : `Asignar empleado a ${position?.label || row.label}`}">${employee ? `<strong>${employee.name}</strong><small>${employee.role}</small>${specialChip}` : emptyState}${positionExceptionSummary(exceptions)}${warnings.length ? `<em>${warnings[0]}</em>` : ""}</button></div>`;
       }).join("")}`).join("")}
     </div></div>
   </section>`;
 }
 
-function planningDaysOffSection(week, conflicts) {
+function planningDaysOffSector(week, sector, daysOffSummary, conflicts) {
   const dates = [...new Set(week.operationalPositions.map((position) => position.date))];
   const dayNames = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
-  const rows = ["Cocina", "Pisos"];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
-  return `<section class="planning-position-sector reference-sector reference-sector-off" aria-labelledby="planning-days-off-title">
-    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">○</span><div><span class="reference-sector-eyebrow">DISPONIBILIDAD</span><h2 id="planning-days-off-title">Francos</h2><p>Registro manual de empleados de franco por sector y día.</p></div></header>
+  const sectionId = `planning-days-off-${sector.toLowerCase()}`;
+  const title = `FRANCOS ${sector.toUpperCase()}`;
+  return `<section class="planning-position-sector reference-sector reference-sector-off" aria-labelledby="${sectionId}">
+    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">○</span><div><span class="reference-sector-eyebrow">DISPONIBILIDAD</span><h2 id="${sectionId}">${title}</h2><p>Francos manuales y F1/F2 calculados por ciclo.</p></div></header>
     <div class="planning-position-board"><div class="planning-position-grid planning-days-off-grid">
-      <div class="planning-position-corner"><strong>Francos</strong><small>${week.daysOff?.length || 0} cargados</small></div>
+      <div class="planning-position-corner"><strong>${title}</strong><small>Manual · Ciclo</small></div>
       ${dates.map((date, index) => `<div class="planning-position-day"><span>${dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
-      ${rows.map((sector) => `<div class="planning-position-row-label"><strong>Francos ${sector}</strong><small>Manual · F1/F2</small></div>${dates.map((date) => planningDaysOffCell(week, sector, date, editable, conflicts)).join("")}`).join("")}
+      <div class="planning-position-row-label"><strong>Personal de franco</strong><small>Manual prevalece</small></div>${dates.map((date) => planningDaysOffCell(week, sector, date, daysOffSummary?.[sector]?.[date] || [], editable, conflicts)).join("")}
     </div></div>
   </section>`;
 }
 
-function planningDaysOffCell(week, sector, date, editable, conflicts) {
-  const dayOffs = (week.daysOff || []).filter((item) => item.sector === sector && item.date === date);
+function planningDaysOffCell(week, sector, date, dayOffs, editable, conflicts) {
   return `<div class="planning-position-cell planning-days-off-cell"><button class="planning-day-off-button ${dayOffs.length ? "assigned" : "empty"}" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"} aria-label="Cargar franco de ${sector} para ${formatIsoDate(date)}">${dayOffs.length ? dayOffs.map((dayOff) => {
-    const employee = state.employees.find((item) => item.id === dayOff.employeeId);
-    const warnings = conflicts.dayOffWarnings.get(dayOff.id) || [];
-    return `<span class="planning-day-off-chip ${warnings.length ? "warning" : ""}"><strong>${employee?.name || "Empleado"}</strong><small>${dayOff.tipo}</small>${warnings.length ? `<em>${warnings[0]}</em>` : ""}</span>`;
+    const warnings = dayOff.dayOffId ? conflicts.dayOffWarnings.get(dayOff.dayOffId) || [] : [];
+    return `<span class="planning-day-off-chip ${warnings.length ? "warning" : ""} ${dayOff.source === "calculatedCycle" ? "calculated" : "manual"}"><strong>${dayOff.name}</strong><small>${dayOff.type || "Franco"}${dayOff.source === "manualDayOff" ? " · Manual" : ""}</small>${warnings.length ? `<em>${warnings[0]}</em>` : ""}</span>`;
   }).join("") : `<span>Sin francos</span>`}</button></div>`;
 }
 
@@ -614,7 +711,9 @@ function detectPlanningConflicts(week) {
   const items = [];
   const counts = { assignedAndOff: 0, duplicateAssignment: 0, unassignedPosition: 0, uncoveredFloor: 0 };
   const assignmentsByPosition = new Map((week.assignments || []).map((assignment) => [assignment.positionId, assignment]));
-  const dayOffs = week.daysOff || [];
+  const positionsById = new Map((week.operationalPositions || []).map((position) => [position.id, position]));
+  const employeesById = new Map((state.employees || []).map((employee) => [employee.id, employee]));
+  const availabilityMap = buildWeeklyAvailabilityMap(state.employees, week, { requests: state.requests });
 
   const addPositionWarning = (positionId, message) => {
     if (!positionWarnings.has(positionId)) positionWarnings.set(positionId, []);
@@ -638,36 +737,48 @@ function detectPlanningConflicts(week) {
     }
   });
 
-  const assignmentsByShiftEmployee = new Map();
+  const assignmentsByDayEmployee = new Map();
   (week.assignments || []).forEach((assignment) => {
-    const position = week.operationalPositions.find((item) => item.id === assignment.positionId);
+    const position = positionsById.get(assignment.positionId);
     if (!position) return;
-    const key = `${position.date}:${position.shift}:${assignment.employeeId}`;
-    if (!assignmentsByShiftEmployee.has(key)) assignmentsByShiftEmployee.set(key, []);
-    assignmentsByShiftEmployee.get(key).push({ assignment, position });
+    const key = `${position.date}:${assignment.employeeId}`;
+    if (!assignmentsByDayEmployee.has(key)) assignmentsByDayEmployee.set(key, []);
+    assignmentsByDayEmployee.get(key).push({ assignment, position });
   });
 
-  assignmentsByShiftEmployee.forEach((records) => {
+  assignmentsByDayEmployee.forEach((records) => {
     if (records.length < 2) return;
-    const employee = state.employees.find((item) => item.id === records[0].assignment.employeeId);
+    const employee = employeesById.get(records[0].assignment.employeeId);
     counts.duplicateAssignment += 1;
-    records.forEach(({ position }) => addPositionWarning(position.id, "Duplicado mismo turno"));
-    items.push({ type: "duplicateAssignment", text: `${formatIsoDate(records[0].position.date)} · ${employee?.name || "Empleado"} figura ${records.length} veces en turno ${records[0].position.shift}.` });
+    records.forEach(({ position }) => addPositionWarning(position.id, "Duplicado mismo día"));
+    items.push({ type: "duplicateAssignment", text: `${formatIsoDate(records[0].position.date)} · ${employee?.name || "Empleado"} figura ${records.length} veces en el mismo día.` });
   });
 
-  dayOffs.forEach((dayOff) => {
-    const records = (week.assignments || [])
-      .map((assignment) => ({ assignment, position: week.operationalPositions.find((item) => item.id === assignment.positionId) }))
-      .filter(({ assignment, position }) => position && position.date === dayOff.date && assignment.employeeId === dayOff.employeeId);
-    if (!records.length) return;
-    const employee = state.employees.find((item) => item.id === dayOff.employeeId);
+  (week.assignments || []).forEach((assignment) => {
+    const position = positionsById.get(assignment.positionId);
+    if (!position) return;
+    const availability = availabilityMap[assignment.employeeId]?.[position.date];
+    if (!availability || availability.available !== false) return;
+    const employee = employeesById.get(assignment.employeeId);
+    const manualDayOff = (week.daysOff || []).find((dayOff) => dayOff.employeeId === assignment.employeeId && dayOff.date === position.date);
+    const reason = availabilityConflictLabel(availability);
     counts.assignedAndOff += 1;
-    addDayOffWarning(dayOff.id, "También asignado");
-    records.forEach(({ position }) => addPositionWarning(position.id, "Empleado de franco"));
-    items.push({ type: "assignedAndOff", text: `${formatIsoDate(dayOff.date)} · ${employee?.name || "Empleado"} está asignado y cargado como franco.` });
+    if (manualDayOff?.id) addDayOffWarning(manualDayOff.id, "También asignado");
+    addPositionWarning(position.id, reason);
+    items.push({ type: "assignedAndOff", text: `${formatIsoDate(position.date)} · ${employee?.name || "Empleado"} está asignado con indisponibilidad: ${reason}.` });
   });
 
   return { counts, items, positionWarnings, dayOffWarnings, total: items.length };
+}
+
+function availabilityConflictLabel(availability) {
+  if (availability?.reason === "dayOff") return availability.dayOffType ? `Franco ${availability.dayOffType}` : "Empleado de franco";
+  if (availability?.reason === "leave") return "Licencia";
+  if (availability?.reason === "absence") return "Ausencia";
+  if (availability?.reason === "vacation") return "Vacaciones";
+  if (availability?.reason === "weeklyException") return "Excepción semanal";
+  if (availability?.reason === "approvedRequest") return "Solicitud aprobada";
+  return "Indisponible";
 }
 
 function planningConflictPanel(conflicts) {
@@ -675,13 +786,13 @@ function planningConflictPanel(conflicts) {
     return `<div class="planning-conflict-panel ok"><span>✓</span><div><strong>Sin advertencias visibles</strong><p>No se detectan conflictos básicos en esta grilla.</p></div></div>`;
   }
   const summary = [
-    ["Asignado y de franco", conflicts.counts.assignedAndOff],
+    ["Asignado no disponible", conflicts.counts.assignedAndOff],
     ["Asignación duplicada", conflicts.counts.duplicateAssignment],
     ["Puestos sin asignar", conflicts.counts.unassignedPosition],
     ["Pisos sin cobertura", conflicts.counts.uncoveredFloor],
   ];
   return `<section class="planning-conflict-panel warning" aria-label="Advertencias de la grilla">
-    <div class="planning-conflict-head"><span>!</span><div><strong>Advertencias de la grilla</strong><p>Los puestos sin asignar y pisos sin cobertura no bloquean la publicación. Solo se bloquea una persona repetida dentro del mismo turno y día.</p></div></div>
+    <div class="planning-conflict-head"><span>!</span><div><strong>Advertencias de la grilla</strong><p>Los puestos sin asignar y pisos sin cobertura no bloquean la publicación. Solo se bloquea una persona repetida dentro del mismo día.</p></div></div>
     <div class="planning-conflict-summary">${summary.map(([label, count]) => `<span><b>${count}</b><small>${label}</small></span>`).join("")}</div>
     <ul>${conflicts.items.slice(0, 8).map((item) => `<li>${item.text}</li>`).join("")}${conflicts.items.length > 8 ? `<li>+ ${conflicts.items.length - 8} advertencias más en la grilla.</li>` : ""}</ul>
   </section>`;
@@ -692,7 +803,7 @@ function publishPlanningWeek() {
   if (!week || !["draft", "paused"].includes(week.status) || !canEditSchedule(user.role)) return;
   const conflicts = detectPlanningConflicts(week);
   if (conflicts.counts.duplicateAssignment) {
-    return toast(`No se puede publicar: corregí ${conflicts.counts.duplicateAssignment} duplicado(s) dentro del mismo turno.`, "error");
+    return toast(`No se puede publicar: corregí ${conflicts.counts.duplicateAssignment} duplicado(s) dentro del mismo día.`, "error");
   }
   const publishedAt = new Date().toISOString();
   const wasPaused = week.status === "paused";
@@ -701,9 +812,101 @@ function publishPlanningWeek() {
   week.publishedBy = { id: user.id || user.username, name: user.name, role: user.role };
   week.pausedAt = "";
   week.pausedBy = null;
+  state.notifications.unshift({
+    id: crypto.randomUUID(),
+    title: wasPaused ? "Grilla republicada" : "Nueva grilla publicada",
+    text: `${week.name} ya está visible para el personal.`,
+    time: "Ahora",
+    type: "schedule",
+    read: false,
+  });
   audit(wasPaused ? "Republicó una grilla" : "Publicó una grilla manual", week.name, "Publicada");
-  persist();
+  persistPlanningWeekLifecycle(week);
   toast(wasPaused ? "Grilla republicada correctamente" : "Grilla publicada correctamente");
+}
+
+async function savePlanningWeekToJson() {
+  const week = state.planningWeek;
+  if (!week || !canEditSchedule(user.role)) return;
+  week.savedAt = new Date().toISOString();
+  week.savedBy = { id: user.id || user.username, name: user.name, role: user.role };
+  audit("Guardó una planificación", week.name, STATE_FILE_NAME);
+  try {
+    await persistPlanningWeekLifecycle(week, { requireFile: true });
+    toast(`Planificación guardada en ${STATE_FILE_NAME}`);
+  } catch (error) {
+    toast(error.message || `No se pudo guardar en ${STATE_FILE_NAME}`, "error");
+  }
+}
+
+function storePlanningWeekSnapshot(week) {
+  if (!Array.isArray(state.weeklySchedules)) state.weeklySchedules = [];
+  const snapshot = structuredClone(week);
+  const index = state.weeklySchedules.findIndex((item) => item.id === week.id);
+  if (index >= 0) state.weeklySchedules[index] = snapshot;
+  else state.weeklySchedules.unshift(snapshot);
+}
+
+function persistPlanningWeekLifecycle(week, options = {}) {
+  if (!week || typeof week !== "object") return persist(options);
+  const timestamp = new Date().toISOString();
+  week.createdAt = week.createdAt || timestamp;
+  week.updatedAt = timestamp;
+  storePlanningWeekSnapshot(week);
+  return persist(options);
+}
+
+function openStoredPlanningWeek(weekId) {
+  const stored = planningSnapshots().find((week) => week.id === weekId);
+  if (!stored || !canEditSchedule(user.role)) return toast("No se encontró la grilla almacenada.", "error");
+  if (state.planningWeek && state.planningWeek.id !== weekId && planningWeekHasUnsavedChanges(state.planningWeek) && !confirm("La grilla actual tiene cambios sin guardar en el historial. ¿Abrir otra grilla de todos modos?")) return;
+  state.planningWeek = structuredClone(stored);
+  planningView = "editor";
+  render();
+}
+
+function generatePlanningProposal() {
+  const week = state.planningWeek;
+  if (!week || !canEditSchedule(user.role)) return;
+  if (week.status === "published") return toast("La grilla publicada validada no se modifica. Creá o abrí una grilla borrador para generar una propuesta.", "error");
+  if (!confirm("Se completarán puestos vacíos con titulares habituales, excepción Gustavo/Julio, coberturas de Pisos y colaboración de Cocina mañana si Pisos queda completo. Las asignaciones manuales se conservan.")) return;
+  ensureKitchenPlanningSlots(week);
+  const generatedAt = new Date().toISOString();
+  const availabilityMap = buildWeeklyAvailabilityMap(state.employees, week, { requests: state.requests });
+  const habitualProposals = generateHabitualAssignments({ week, employees: state.employees, availabilityMap });
+  const gustavoJulioResult = applyGustavoJulioException({
+    week,
+    employees: state.employees,
+    availabilityMap,
+    pendingAssignments: habitualProposals,
+    generatedAt,
+  });
+  const coverageResult = generateFloorCoverageAssignments({
+    week,
+    employees: state.employees,
+    availabilityMap,
+    weeklySchedules: state.weeklySchedules,
+    pendingAssignments: gustavoJulioResult.assignments,
+    generatedAt,
+  });
+  const kitchenCollaborations = generateKitchenMorningCollaborationAssignments({
+    week,
+    employees: state.employees,
+    availabilityMap,
+    weeklySchedules: state.weeklySchedules,
+    pendingAssignments: [...gustavoJulioResult.assignments, ...coverageResult.assignments],
+    floorCoverageGaps: coverageResult.uncovered,
+    generatedAt,
+  });
+  const proposals = [...gustavoJulioResult.assignments, ...coverageResult.assignments, ...kitchenCollaborations];
+  proposals.forEach((proposal) => week.assignments.push({ id: crypto.randomUUID(), ...proposal }));
+  week.lastProposalAt = generatedAt;
+  week.lastProposalMode = "habitualPositionsGustavoJulioFloorCoverageAndKitchenMorningCollaboration";
+  week.lastCoverageGaps = coverageResult.uncovered;
+  audit("Generó una propuesta de planificación", week.name, `${gustavoJulioResult.assignments.length - gustavoJulioResult.coverages.length} titulares, ${gustavoJulioResult.coverages.length} cobertura Gustavo/Julio, ${coverageResult.assignments.length} coberturas de Pisos y ${kitchenCollaborations.length} colaboraciones en Cocina mañana`);
+  persistPlanningWeekLifecycle(week);
+  const gapText = coverageResult.uncovered.length ? ` · ${coverageResult.uncovered.length} puestos de Pisos sin cubrir` : "";
+  toast(proposals.length ? `Propuesta generada: ${gustavoJulioResult.assignments.length - gustavoJulioResult.coverages.length} titulares, ${gustavoJulioResult.coverages.length} cobertura Gustavo/Julio, ${coverageResult.assignments.length} coberturas y ${kitchenCollaborations.length} colaboraciones${gapText}` : `No había asignaciones disponibles${gapText}`);
 }
 
 function pausePlanningWeek() {
@@ -714,7 +917,7 @@ function pausePlanningWeek() {
   week.pausedAt = new Date().toISOString();
   week.pausedBy = { id: user.id || user.username, name: user.name, role: user.role };
   audit("Pausó una grilla publicada", week.name, "Pausada");
-  persist();
+  persistPlanningWeekLifecycle(week);
   toast("Publicación pausada");
 }
 
@@ -726,16 +929,18 @@ function draftPlanningWeek() {
   week.returnedToDraftAt = new Date().toISOString();
   week.returnedToDraftBy = { id: user.id || user.username, name: user.name, role: user.role };
   audit("Volvió una grilla a borrador", week.name, "Borrador");
-  persist();
+  persistPlanningWeekLifecycle(week);
   toast("Grilla en borrador");
 }
 
 function deletePlanningWeek() {
   const week = state.planningWeek;
   if (!week || !canEditSchedule(user.role)) return;
-  if (!confirm("¿Eliminar esta grilla? Se perderá la semana creada, sus asignaciones, francos y excepciones.")) return;
+  if (!confirm("¿Eliminar esta grilla? Se quitará también del historial almacenado.")) return;
   const weekName = week.name;
+  state.weeklySchedules = (state.weeklySchedules || []).filter((item) => item.id !== week.id);
   state.planningWeek = null;
+  planningView = "library";
   audit("Eliminó una grilla semanal", weekName, "Eliminada");
   persist();
   toast("Grilla eliminada");
@@ -791,16 +996,42 @@ function shiftCard(s, editable) {
 
 function employeesPage() {
   if (!isAdminRole(user.role)) return staffDashboard();
+  const canManage = canManageEmployees(user.role);
   const query = employeeSearch.toLowerCase();
-  const filtered = state.employees.filter((employee) => [employee.name, employee.role, employee.sector, employee.turno].filter(Boolean).some((value) => value.toLowerCase().includes(query)));
-  return `${pageHeading("EQUIPO", "Personal", `${state.employees.filter((e) => e.status === "active").length} personas activas en el servicio.`)}
-    <div class="notice"><span>ⓘ</span><div><strong>Gestión de empleados deshabilitada en esta versión del MVP</strong><p>La base oficial de 16 perfiles permanece fija por ahora.</p></div></div>
-    <section class="toolbar"><label class="search">⌕<input id="employee-search" placeholder="Buscar por nombre, rol, sector o turno…" value="${employeeSearch}" /></label><div class="filter-summary"><span class="status-dot"></span>${filtered.length} resultados</div></section>
-    <section class="table-card"><table><thead><tr><th>Persona</th><th>Rol</th><th>Turno y ubicación</th><th>Francos base</th><th>Estado</th><th>Gestión</th></tr></thead><tbody>${filtered.map((employee) => `<tr><td><div class="person-cell"><span class="avatar">${employee.initials}</span><div><strong>${employee.name}</strong><small>${employee.participaEnOperacion ? "Personal operativo" : employee.systemRole}</small></div></div></td><td>${employee.role}</td><td>${employeeAssignment(employee)}</td><td>${employeeFrancos(employee)}</td><td><span class="badge ${employee.status}">${statusText[employee.status]}</span></td><td><span class="muted">Deshabilitada</span></td></tr>`).join("")}</tbody></table>${filtered.length ? "" : empty("No encontramos personas con esa búsqueda")}</section>`;
+  const rows = userRows().filter(({ user: rowUser, employee }) => {
+    return [rowUser?.username, rowUser?.name, rowUser ? roleLabel[rowUser.role] : "Sin usuario", employee?.name, employee?.role, employee?.sector, employee?.turno]
+      .filter(Boolean)
+      .some((value) => value.toLowerCase().includes(query));
+  });
+  const action = canManage ? `<div class="heading-actions"><button class="button primary" data-action="new-user">${icons.plus} Usuario</button></div>` : "";
+  return `${pageHeading("EQUIPO", "Usuarios", `${state.users.length} usuarios con acceso · ${state.employees.length} personas registradas.`, action)}
+    <section class="toolbar"><label class="search">⌕<input id="employee-search" placeholder="Buscar por usuario, persona, rol, sector o turno…" value="${employeeSearch}" /></label><div class="filter-summary"><span class="status-dot"></span>${rows.length} resultados</div></section>
+    ${usersAdminPanel(canManage, rows)}`;
+}
+
+function userRows() {
+  const linkedEmployeeIds = new Set();
+  const rows = state.employees.map((employee) => {
+    const rowUser = state.users.find((item) => item.employeeId === employee.id);
+    if (rowUser) linkedEmployeeIds.add(employee.id);
+    return { user: rowUser, employee };
+  });
+  state.users.forEach((rowUser) => {
+    if (!rowUser.employeeId || linkedEmployeeIds.has(rowUser.employeeId)) return;
+    rows.push({ user: rowUser, employee: state.employees.find((employee) => employee.id === rowUser.employeeId) || null });
+  });
+  return rows;
+}
+
+function usersAdminPanel(canManage, rows = userRows()) {
+  return `<section class="table-card"><table><thead><tr><th>Usuario</th><th>Persona</th><th>Rol empresa</th><th>Ubicación</th><th>Rol sistema</th><th>Gestión</th></tr></thead><tbody>${rows.map(({ user: rowUser, employee }) => {
+      const rowId = rowUser?.id || employee?.id || "";
+      return `<tr><td>${rowUser ? `<strong>${escapeHtml(rowUser.username)}</strong>` : `<span class="muted">Sin usuario</span>`}</td><td><div class="person-cell"><span class="avatar">${escapeHtml(employee?.initials || initials(rowUser?.name || rowUser?.username || "?"))}</span><div><strong>${escapeHtml(employee?.name || rowUser?.name || "Sin persona")}</strong><small>${escapeHtml(employee?.phone || "Sin teléfono")}</small></div></div></td><td>${escapeHtml(employee?.role || "Sin rol laboral")}</td><td>${employeeAssignment(employee || {})}</td><td>${rowUser ? escapeHtml(roleLabel[rowUser.role] || rowUser.role) : `<span class="muted">Sin acceso</span>`}</td><td>${canManage ? `<div class="row-actions">${rowUser ? `<button class="row-action" data-action="edit-user" data-id="${rowId}">Editar</button><button class="row-action danger" data-action="delete-user" data-id="${rowId}">Eliminar</button>` : `<button class="row-action" data-action="create-user-for-employee" data-id="${rowId}">Crear acceso</button>`}</div>` : `<span class="muted">Solo lectura</span>`}</td></tr>`;
+    }).join("")}</tbody></table>${rows.length ? "" : empty("No encontramos usuarios con esa búsqueda")}</section>`;
 }
 
 function employeeAssignment(employee) {
-  const location = employee.piso ? `Piso ${employee.piso}` : employee.role === "Franquera" ? "Cobertura flexible" : employee.sector || "No operativo";
+  const location = employee.piso ? `Piso ${employee.piso}` : employee.role === "Personal franquero" ? "Cobertura flexible" : employee.sector || "No operativo";
   return `<div class="employee-assignment"><strong>${employee.turno || "Sin turno fijo"}</strong><small>${location}</small></div>`;
 }
 
@@ -843,11 +1074,46 @@ function auditPage() {
   if (!canSeeAudit(user.role)) return dashboardPage();
   return `${pageHeading("TRAZABILIDAD", "Auditoría", "Registro de las acciones relevantes del sistema.")}
     <section class="table-card"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Elemento</th><th>Resultado</th></tr></thead><tbody>${state.auditLogs.map((a) => `<tr><td>${escapeHtml(a.time)}</td><td><strong>${escapeHtml(a.user)}</strong></td><td>${escapeHtml(a.action)}</td><td><span class="sector-pill">${escapeHtml(a.entity)}</span></td><td><span class="badge active">${escapeHtml(a.result)}</span></td></tr>`).join("")}</tbody></table></section>
-    <button class="reset-link" data-action="reset-demo">Restablecer datos de demostración</button>`;
+    <button class="reset-link" data-action="reset-demo">Restablecer datos iniciales</button>`;
 }
 
 function modal(content) {
   document.body.insertAdjacentHTML("beforeend", `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true">${content}</section></div>`);
+}
+
+function exportStateJson() {
+  const blob = new Blob([serializeState(state)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = STATE_FILE_NAME;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  toast("Archivo JSON generado");
+}
+
+function importStateJson() {
+  if (!canEditApplications(user.role)) return toast("Solo una encargada puede importar datos.", "error");
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,application/json";
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const importedState = hydrateStateFromJson(await file.text());
+      importedState.stateRevision = state.stateRevision;
+      state = importedState;
+      audit("Importó datos desde JSON", file.name, "Datos restaurados");
+      persist();
+      toast("Datos importados correctamente");
+    } catch {
+      toast("El archivo JSON no tiene un formato válido.", "error");
+    }
+  }, { once: true });
+  input.click();
 }
 
 function updateRequestFormSections(form) {
@@ -888,7 +1154,7 @@ function requestDetailModal(requestId) {
   const partnerActions = canActAsPartner(request)
     ? `<button class="button danger-soft" data-action="partner-resolve" data-id="${request.id}" data-status="partnerRejected">Rechazar</button><button class="button primary" data-action="partner-resolve" data-id="${request.id}" data-status="partnerAccepted">Aceptar</button>`
     : "";
-  const managerActions = isAdminRole(user.role) && canManagerResolveRequest(request)
+  const managerActions = canManagerResolveRequest(request)
     ? `<button class="button danger-soft" data-action="resolve" data-id="${request.id}" data-status="rejected">Rechazar</button><button class="button primary" data-action="resolve" data-id="${request.id}" data-status="approved">Aprobar</button>`
     : "";
   const revokeAction = canRevokeRequest(request)
@@ -904,8 +1170,76 @@ function revokeRequestModal(requestId) {
   modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">REVOCACIÓN</span><h2>Revocar ${escapeHtml(request.id)}</h2><p class="muted">El Motor de Planificación intentará revertir el impacto automáticamente solo si es seguro.</p><form id="request-revoke-form"><input type="hidden" name="requestId" value="${escapeHtml(request.id)}" /><label>Motivo de revocación<textarea name="reason" rows="4" placeholder="Indicá por qué se revoca esta aprobación" required></textarea></label><div class="week-form-note"><strong>Reversión segura</strong><p>Si la grilla cambió después de la aprobación, no se modificará automáticamente y quedará marcada para revisión manual.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button danger-soft">Revocar aprobación</button></div></form>`);
 }
 
-function newEmployeeModal() {
-  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">PERSONAL</span><h2>Gestión deshabilitada</h2><p class="muted">La base oficial de 16 perfiles permanece fija en esta versión del MVP.</p><div class="modal-actions"><button type="button" class="button primary" data-action="close-modal">Entendido</button></div>`);
+function selectOptions(options, selected = "") {
+  return options.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("");
+}
+
+function companyRoleSelectOptions(selected = "") {
+  return selectOptions(companyRoleOptions.map((role) => ({ value: role, label: role })), selected);
+}
+
+function shiftSelectOptions(selected = "") {
+  return `<option value="" ${selected ? "" : "selected"}>Flexible / sin turno</option>${selectOptions(shiftOptions.map((shift) => ({ value: shift, label: shift })), selected)}`;
+}
+
+function sectorSelectOptions(selected = "") {
+  return selectOptions([
+    { value: "", label: "No operativo" },
+    { value: "Cocina", label: "Cocina" },
+    { value: "Pisos", label: "Pisos" },
+  ], selected || "");
+}
+
+function floorSelectOptions(selected = "") {
+  return selectOptions([
+    { value: "", label: "Sin piso fijo" },
+    { value: "1", label: "Piso 1" },
+    { value: "2", label: "Piso 2" },
+    { value: "3", label: "Piso 3" },
+  ], selected ? String(selected) : "");
+}
+
+function systemRoleSelectOptions(selected = "staff") {
+  return selectOptions([
+    { value: "staff", label: "Personal operativo" },
+    { value: "manager", label: "Encargada" },
+    { value: "supervisor", label: "Supervisión" },
+    { value: "admin", label: "Administración principal" },
+  ], selected);
+}
+
+function newUserModal() {
+  if (!canManageEmployees(user.role)) return toast("Solo una encargada puede crear usuarios.", "error");
+  userModal();
+}
+
+function editUserModal(userId) {
+  if (!canManageEmployees(user.role)) return toast("Solo una encargada puede editar usuarios.", "error");
+  const targetUser = state.users.find((item) => item.id === userId);
+  if (!targetUser) return toast("No se encontró el usuario.", "error");
+  userModal(targetUser);
+}
+
+function createUserForEmployeeModal(employeeId) {
+  if (!canManageEmployees(user.role)) return toast("Solo una encargada puede crear usuarios.", "error");
+  const employee = state.employees.find((item) => item.id === employeeId);
+  if (!employee) return toast("No se encontró la persona.", "error");
+  userModal(null, employee);
+}
+
+function userModal(targetUser = null, linkedEmployee = null) {
+  const employee = targetUser ? state.employees.find((item) => item.id === targetUser.employeeId) : linkedEmployee;
+  const isEditing = Boolean(targetUser);
+  const username = targetUser?.username || (employee ? slugify(employee.name).split("-")[0] : "");
+  const password = targetUser?.password || "demo123";
+  const name = employee?.name || targetUser?.name || "";
+  const companyRole = employee?.role || companyRoleOptions[0];
+  const systemRole = targetUser?.role || "staff";
+  const sector = employee?.sector || "";
+  const turno = employee?.turno || "";
+  const piso = employee?.piso || "";
+  const phone = employee?.phone || "";
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">${isEditing ? "EDITAR USUARIO" : "NUEVO USUARIO"}</span><h2>${isEditing ? "Editar usuario" : "Agregar usuario"}</h2><p class="muted">${isEditing ? "Los cambios se guardan en la base JSON y actualizan el acceso y los datos laborales." : "Se crea el acceso a la app con sus datos laborales en una sola operación."}</p><form id="user-form"><input type="hidden" name="userId" value="${escapeHtml(targetUser?.id || "")}" /><input type="hidden" name="employeeId" value="${escapeHtml(employee?.id || "")}" /><div class="form-row"><label>Usuario<input name="username" autocomplete="off" value="${escapeHtml(username)}" required /></label><label>Contraseña<input name="password" type="password" value="${escapeHtml(password)}" required /></label></div><label>Nombre completo<input name="name" value="${escapeHtml(name)}" required /></label><div class="form-row"><label>Rol del sistema<select name="systemRole" required>${systemRoleSelectOptions(systemRole)}</select></label><label>Rol dentro de la empresa<select name="companyRole" required>${companyRoleSelectOptions(companyRole)}</select></label></div><div class="form-row"><label>Sector<select name="sector">${sectorSelectOptions(sector)}</select></label><label>Turno<select name="turno">${shiftSelectOptions(turno)}</select></label></div><div class="form-row"><label>Piso<select name="piso">${floorSelectOptions(piso)}</select></label><label>Teléfono<input name="phone" value="${escapeHtml(phone)}" /></label></div><div class="week-form-note"><strong>Roles separados</strong><p>El rol del sistema define permisos. El rol dentro de la empresa define la función laboral y cómo aparece en grilla.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${isEditing ? "Guardar cambios" : "Guardar usuario"}</button></div></form>`);
 }
 
 function newPlanningWeekModal() {
@@ -919,7 +1253,7 @@ function assignmentModal(positionId) {
   if (!position) return;
   const assignment = week.assignments.find((item) => item.positionId === positionId);
   const availableEmployees = state.employees.filter((employee) => employee.status === "active" && employee.participaEnOperacion !== false);
-  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">ASIGNACIÓN MANUAL</span><h2>${position.label}</h2><p class="muted">${formatIsoDate(position.date)} · Turno ${position.shift} · ${position.sector}</p><form id="position-assignment-form"><input type="hidden" name="positionId" value="${position.id}" /><label>Empleado<select name="employeeId" required><option value="">Seleccionar empleado</option>${availableEmployees.map((employee) => `<option value="${employee.id}" ${assignment?.employeeId === employee.id ? "selected" : ""}>${employee.name} · ${employee.role}</option>`).join("")}</select></label><div class="week-form-note"><strong>Asignación manual</strong><p>Se permite doble turno en el mismo día. No se permite repetir la misma persona dentro del mismo turno.</p></div><div class="modal-actions">${assignment ? `<button type="button" class="button danger-soft" data-action="remove-planning-assignment" data-position-id="${position.id}">Quitar asignación</button>` : ""}<button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${assignment ? "Cambiar empleado" : "Asignar empleado"}</button></div></form>`);
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">ASIGNACIÓN MANUAL</span><h2>${position.label}</h2><p class="muted">${formatIsoDate(position.date)} · Turno ${position.shift} · ${position.sector}</p><form id="position-assignment-form"><input type="hidden" name="positionId" value="${position.id}" /><label>Empleado<select name="employeeId" required><option value="">Seleccionar empleado</option>${availableEmployees.map((employee) => `<option value="${employee.id}" ${assignment?.employeeId === employee.id ? "selected" : ""}>${employee.name} · ${employee.role}</option>`).join("")}</select></label><div class="week-form-note"><strong>Asignación manual</strong><p>No se permite repetir la misma persona dentro del mismo día.</p></div><div class="modal-actions">${assignment ? `<button type="button" class="button danger-soft" data-action="remove-planning-assignment" data-position-id="${position.id}">Quitar asignación</button>` : ""}<button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${assignment ? "Cambiar empleado" : "Asignar empleado"}</button></div></form>`);
 }
 
 function dayOffModal({ sector, date }) {
@@ -981,6 +1315,44 @@ function updateExceptionAffectedEmployee(form) {
 
 function closeModal() { document.querySelector(".modal-backdrop")?.remove(); }
 function initials(name) { return name.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase(); }
+function slugify(value) { return String(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""); }
+function uniqueId(prefix, seed, collection) {
+  const base = `${prefix}-${slugify(seed) || "nuevo"}`;
+  let candidate = base;
+  let index = 2;
+  while (collection.some((item) => item.id === candidate)) {
+    candidate = `${base}-${index}`;
+    index += 1;
+  }
+  return candidate;
+}
+function roleIdFor(role) {
+  return {
+    "Personal de cocina": "rol-cocinero",
+    "Ayudante de cocina": "rol-peon-cocina",
+    "Personal de camarería": "rol-camarera",
+    "Personal franquero": "rol-franquera",
+    "Encargada/Nutrición": "rol-nutricionista",
+    Cocinero: "rol-cocinero",
+    "Peón de cocina": "rol-peon-cocina",
+    Camarera: "rol-camarera",
+    Franquera: "rol-franquera",
+    "Encargada/Nutricionista": "rol-nutricionista",
+  }[role] || null;
+}
+function sectorIdFor(sector) {
+  return { Cocina: "sec-cocina", Pisos: "sec-pisos" }[sector] || null;
+}
+function turnoIdFor(turno) {
+  return { Mañana: "turno-manana", Tarde: "turno-tarde" }[turno] || null;
+}
+function systemRoleFor(role, participaEnOperacion) {
+  if (role === "Encargada/Nutrición") return "Encargada";
+  if (role === "Supervisión") return "Supervisión";
+  if (role === "Encargada/Nutricionista") return "Encargada";
+  if (role === "Supervisora") return "Supervisión";
+  return participaEnOperacion ? "Personal" : "Administrativo";
+}
 function formatIsoDate(value) { const [year, month, day] = value.split("-"); return `${day}/${month}/${year}`; }
 function addIsoDays(value, amount) {
   const [year, month, day] = value.split("-").map(Number);
@@ -1000,11 +1372,11 @@ function escapeHtml(value) {
     "'": "&#39;",
   }[char]));
 }
-function hasSameShiftDuplicate(week, position, employeeId) {
+function hasSameDayAssignment(week, position, employeeId) {
   return (week.assignments || []).some((assignment) => {
     if (assignment.positionId === position.id || assignment.employeeId !== employeeId) return false;
     const assignedPosition = week.operationalPositions.find((item) => item.id === assignment.positionId);
-    return assignedPosition?.date === position.date && assignedPosition.shift === position.shift;
+    return assignedPosition?.date === position.date;
   });
 }
 function unreadCount() { return state.notifications.filter((n) => !n.read).length; }
@@ -1026,7 +1398,7 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "login-form") {
     const data = new FormData(event.target);
     const username = data.get("username").trim().toLowerCase();
-    const match = canonicalDemoUsers.find((u) => u.username === username && u.password === data.get("password"));
+    const match = state.users.find((u) => u.username === username && u.password === data.get("password"));
     if (!match) return renderLogin("Usuario o contraseña incorrectos.");
     return loginAsDemoUser(match);
   }
@@ -1100,20 +1472,28 @@ document.addEventListener("submit", (event) => {
     toast(revocation.requiresManualReview ? "No se pudo revertir automáticamente. Revisar la grilla manualmente." : "Solicitud revocada y grilla revertida");
   }
   if (event.target.id === "planning-week-form") {
-    if (!canEditSchedule(user.role) || state.planningWeek) return;
+    if (!canEditSchedule(user.role)) return;
     const data = new FormData(event.target);
     const name = data.get("name").trim();
     const startDate = data.get("startDate");
     const endDate = addIsoDays(startDate, 6);
     if (!name) return toast("Ingresá un nombre para la semana.", "error");
     if (data.get("endDate") && data.get("endDate") !== endDate) return toast("La semana debe durar exactamente 7 días.", "error");
+    if (state.planningWeek) {
+      if (!confirm("La grilla que estás editando se guardará en el historial antes de crear una nueva.")) return;
+      state.planningWeek.savedAt = state.planningWeek.savedAt || new Date().toISOString();
+      state.planningWeek.savedBy = state.planningWeek.savedBy || { id: user.id || user.username, name: user.name, role: user.role };
+      state.planningWeek.updatedAt = new Date().toISOString();
+      storePlanningWeekSnapshot(state.planningWeek);
+    }
     state.planningWeek = createDraftPlanningWeek({
       id: crypto.randomUUID(),
       name,
       startDate,
       endDate,
     });
-    closeModal(); persist(); toast("Semana creada como borrador");
+    planningView = "editor";
+    closeModal(); persistPlanningWeekLifecycle(state.planningWeek); toast("Semana creada como borrador");
   }
   if (event.target.id === "position-assignment-form") {
     const week = state.planningWeek;
@@ -1124,11 +1504,11 @@ document.addEventListener("submit", (event) => {
     const position = week.operationalPositions.find((item) => item.id === positionId);
     const employee = state.employees.find((item) => item.id === employeeId && item.status === "active" && item.participaEnOperacion !== false);
     if (!position || !employee) return toast("No se pudo guardar la asignación.", "error");
-    if (hasSameShiftDuplicate(week, position, employeeId)) return toast(`${employee.name} ya está asignado en el turno ${position.shift} de ese día.`, "error");
+    if (hasSameDayAssignment(week, position, employeeId)) return toast(`${employee.name} ya está asignado ese día.`, "error");
     const existingAssignment = week.assignments.find((item) => item.positionId === positionId);
     if (existingAssignment) existingAssignment.employeeId = employeeId;
     else week.assignments.push({ id: crypto.randomUUID(), positionId, employeeId });
-    closeModal(); persist(); toast(`${employee.name} fue asignado al puesto`);
+    closeModal(); persistPlanningWeekLifecycle(week); toast(`${employee.name} fue asignado al puesto`);
   }
   if (event.target.id === "planning-day-off-form") {
     const week = state.planningWeek;
@@ -1144,7 +1524,7 @@ document.addEventListener("submit", (event) => {
     const existingDayOff = week.daysOff.find((item) => item.date === date && item.sector === sector && item.employeeId === employeeId);
     if (existingDayOff) existingDayOff.tipo = tipo;
     else week.daysOff.push({ id: crypto.randomUUID(), date, sector, employeeId, tipo });
-    closeModal(); persist(); toast(`Franco ${tipo} cargado para ${employee.name}`);
+    closeModal(); persistPlanningWeekLifecycle(week); toast(`Franco ${tipo} cargado para ${employee.name}`);
   }
   if (event.target.id === "week-exception-form") {
     const week = state.planningWeek;
@@ -1176,10 +1556,68 @@ document.addEventListener("submit", (event) => {
     if (existing) Object.assign(existing, payload);
     else week.exceptions.push({ id: crypto.randomUUID(), ...payload, createdAt: payload.updatedAt });
     audit(existing ? "Editó una excepción semanal" : "Registró una excepción semanal", `${formatIsoDate(position.date)} · ${position.label}`, exceptionTypes[type]);
-    closeModal(); persist(); toast(existing ? "Excepción actualizada" : "Excepción registrada");
+    closeModal(); persistPlanningWeekLifecycle(week); toast(existing ? "Excepción actualizada" : "Excepción registrada");
   }
-  if (event.target.id === "employee-form") {
-    return toast("Gestión de empleados deshabilitada en esta versión del MVP.", "error");
+  if (event.target.id === "user-form") {
+    if (!canManageEmployees(user.role)) return toast("Solo una encargada puede crear usuarios.", "error");
+    const data = new FormData(event.target);
+    const userId = data.get("userId");
+    const employeeId = data.get("employeeId");
+    const username = data.get("username").trim().toLowerCase();
+    const password = data.get("password");
+    const name = data.get("name").trim();
+    const role = data.get("systemRole");
+    const companyRole = data.get("companyRole");
+    const sector = data.get("sector");
+    const turno = data.get("turno");
+    const participaEnOperacion = operationalCompanyRoles.includes(companyRole);
+    if (!username || !password || !name || !role || !companyRole) return toast("Completá usuario, contraseña, nombre y roles.", "error");
+    if (state.users.some((item) => item.username === username && item.id !== userId)) return toast("Ese usuario ya existe.", "error");
+    const existingUser = userId ? state.users.find((item) => item.id === userId) : null;
+    let employee = employeeId ? state.employees.find((item) => item.id === employeeId) : null;
+    if (!employee) {
+      employee = {
+        id: uniqueId("emp", name, state.employees),
+        status: "active",
+        francos: [],
+        createdFromUser: username,
+      };
+      state.employees.push(employee);
+    }
+    Object.assign(employee, {
+      name,
+      initials: initials(name),
+      role: companyRole,
+      roleId: roleIdFor(companyRole),
+      sector: sector || null,
+      sectorId: sectorIdFor(sector),
+      turno: turno || null,
+      turnoId: turnoIdFor(turno),
+      piso: data.get("piso") ? Number(data.get("piso")) : null,
+      phone: data.get("phone").trim(),
+      status: employee.status || "active",
+      systemRole: systemRoleFor(companyRole, participaEnOperacion),
+      participaEnOperacion,
+      francos: Array.isArray(employee.francos) ? employee.francos : [],
+    });
+    const savedUser = existingUser || {
+      id: uniqueId("user", username, state.users),
+      employeeId: employee.id,
+    };
+    Object.assign(savedUser, {
+      username,
+      password,
+      name,
+      role,
+      employeeId: employee.id,
+    });
+    if (!existingUser) state.users.push(savedUser);
+    if (userId && (savedUser.id === user.id || savedUser.username === user.username)) {
+      user = savedUser;
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(user));
+    }
+    audit(existingUser ? "Editó un usuario y sus datos laborales" : "Creó un usuario y sus datos laborales", username, `${roleLabel[role] || role} · ${companyRole}`);
+    closeModal(); persist(); toast(existingUser ? "Usuario actualizado en la base JSON" : "Usuario y datos laborales guardados en la base JSON");
   }
 });
 
@@ -1218,25 +1656,32 @@ document.addEventListener("change", (event) => {
 
 document.addEventListener("click", (event) => {
   const pageButton = event.target.closest("[data-page]");
-  if (pageButton) { page = pageButton.dataset.page; document.querySelector("#sidebar")?.classList.remove("open"); render(); return; }
+  if (pageButton) { page = pageButton.dataset.page; if (page === "schedule" && canEditSchedule(user.role)) planningView = "library"; document.querySelector("#sidebar")?.classList.remove("open"); render(); return; }
   const button = event.target.closest("[data-action]"); if (!button) return;
   const action = button.dataset.action;
   if (action === "toggle-password") { const input = document.querySelector('input[name="password"]'); input.type = input.type === "password" ? "text" : "password"; button.textContent = input.type === "password" ? "Ver" : "Ocultar"; }
   if (action === "demo-login") {
-    const match = canonicalDemoUsers.find((item) => item.username === button.dataset.username);
-    if (!match) return renderLogin("Usuario demo no disponible.");
+    const match = state.users.find((item) => item.username === button.dataset.username);
+    if (!match) return renderLogin("Usuario no disponible.");
     loginAsDemoUser(match);
   }
   if (action === "logout") { user = null; sessionStorage.removeItem(SESSION_KEY); sessionStorage.removeItem("uzumaki-user-v3"); sessionStorage.removeItem("uzumaki-user-v2"); sessionStorage.removeItem("uzumaki-user"); sessionStorage.removeItem("turnia-user"); render(); }
   if (action === "menu") document.querySelector("#sidebar")?.classList.toggle("open");
+  if (action === "export-state-json") exportStateJson();
+  if (action === "import-state-json") importStateJson();
   if (action === "toggle-schedule") { scheduleMode = scheduleMode === "official" ? "draft" : "official"; render(); }
-  if (action === "cycle-shift") { const item = state.draft.find((s) => s.id === button.dataset.id); const states = ["working", "off", "sick", "leave"]; item.state = states[(states.indexOf(item.state) + 1) % states.length]; state.hasDraftChanges = true; saveState(state); render(); }
+  if (action === "cycle-shift") { const item = state.draft.find((s) => s.id === button.dataset.id); const states = ["working", "off", "sick", "leave"]; item.state = states[(states.indexOf(item.state) + 1) % states.length]; state.hasDraftChanges = true; persist(); }
   if (action === "publish") { state.schedule = structuredClone(state.draft); state.scheduleVersion += 1; state.hasDraftChanges = false; state.notifications.unshift({ id: crypto.randomUUID(), title: "Nueva grilla publicada", text: `La versión ${state.scheduleVersion} ya está disponible.`, time: "Ahora", type: "schedule", read: false }); audit("Publicó la grilla", `Semana 49 · v${state.scheduleVersion}`, "Publicada"); scheduleMode = "official"; persist(); toast(`Grilla versión ${state.scheduleVersion} publicada`); }
   if (action === "new-request") newRequestModal();
   if (action === "view-request") requestDetailModal(button.dataset.id);
   if (action === "open-revoke-request") revokeRequestModal(button.dataset.id);
-  if (action === "new-employee") newEmployeeModal();
-  if (action === "new-planning-week" && canEditSchedule(user.role) && !state.planningWeek) newPlanningWeekModal();
+  if (action === "new-user") newUserModal();
+  if (action === "edit-user") editUserModal(button.dataset.id);
+  if (action === "create-user-for-employee") createUserForEmployeeModal(button.dataset.id);
+  if (action === "new-planning-week" && canEditSchedule(user.role)) newPlanningWeekModal();
+  if (action === "open-planning-library") { planningView = "library"; render(); }
+  if (action === "open-current-planning") { planningView = "editor"; render(); }
+  if (action === "open-stored-planning") openStoredPlanningWeek(button.dataset.weekId);
   if (action === "assign-planning-position") assignmentModal(button.dataset.positionId);
   if (action === "add-planning-day-off") dayOffModal({ sector: button.dataset.sector, date: button.dataset.date });
   if (action === "new-week-exception") weekExceptionModal();
@@ -1247,7 +1692,7 @@ document.addEventListener("click", (event) => {
     const before = week.assignments.length;
     week.assignments = week.assignments.filter((assignment) => assignment.positionId !== button.dataset.positionId);
     if (week.assignments.length === before) return toast("No había asignación para quitar.", "error");
-    closeModal(); persist(); toast("Asignación quitada");
+    closeModal(); persistPlanningWeekLifecycle(week); toast("Asignación quitada");
   }
   if (action === "remove-planning-day-off") {
     const week = state.planningWeek;
@@ -1255,7 +1700,7 @@ document.addEventListener("click", (event) => {
     const before = week.daysOff?.length || 0;
     week.daysOff = (week.daysOff || []).filter((dayOff) => dayOff.id !== button.dataset.dayOffId);
     if (week.daysOff.length === before) return toast("No se encontró el franco para quitar.", "error");
-    closeModal(); persist(); toast("Franco quitado");
+    closeModal(); persistPlanningWeekLifecycle(week); toast("Franco quitado");
   }
   if (action === "remove-week-exception") {
     const week = state.planningWeek;
@@ -1264,8 +1709,10 @@ document.addEventListener("click", (event) => {
     if (!exception) return toast("No se encontró la excepción.", "error");
     week.exceptions = (week.exceptions || []).filter((item) => item.id !== exception.id);
     audit("Eliminó una excepción semanal", exceptionTypes[exception.type] || "Excepción", "Eliminada");
-    persist(); toast("Excepción eliminada");
+    persistPlanningWeekLifecycle(week); toast("Excepción eliminada");
   }
+  if (action === "save-planning-week") savePlanningWeekToJson();
+  if (action === "generate-planning-proposal") generatePlanningProposal();
   if (action === "publish-planning-week") publishPlanningWeek();
   if (action === "pause-planning-week") pausePlanningWeek();
   if (action === "draft-planning-week") draftPlanningWeek();
@@ -1320,10 +1767,23 @@ document.addEventListener("click", (event) => {
     audit(`${request.status === "approved" ? "Aprobó" : "Rechazó"} una solicitud`, request.id, statusText[request.status]);
     closeModal(); persist(); toast(`Solicitud ${statusText[request.status].toLowerCase()}`);
   }
-  if (action === "toggle-employee") toast("Gestión de empleados deshabilitada en esta versión del MVP.", "error");
+  if (action === "delete-user") {
+    if (!canManageEmployees(user.role)) return toast("Solo una encargada puede eliminar usuarios.", "error");
+    const targetUser = state.users.find((item) => item.id === button.dataset.id);
+    if (!targetUser) return toast("No se encontró el usuario.", "error");
+    if (targetUser.id === user.id || targetUser.username === user.username) return toast("No podés eliminar el usuario con la sesión abierta.", "error");
+    const targetEmployee = state.employees.find((item) => item.id === targetUser.employeeId);
+    const shouldDeleteEmployee = targetEmployee && !state.users.some((item) => item.id !== targetUser.id && item.employeeId === targetEmployee.id);
+    if (!confirm(`¿Eliminar el usuario ${targetUser.username}${shouldDeleteEmployee ? " y sus datos laborales" : ""}? Esta acción se guarda en el JSON.`)) return;
+    state.users = state.users.filter((item) => item.id !== targetUser.id);
+    if (shouldDeleteEmployee) state.employees = state.employees.filter((item) => item.id !== targetEmployee.id);
+    audit("Eliminó un usuario", targetUser.username, shouldDeleteEmployee ? "Usuario y datos laborales eliminados" : "Usuario eliminado");
+    persist(); toast(shouldDeleteEmployee ? "Usuario y datos laborales eliminados de la base JSON" : "Usuario eliminado de la base JSON");
+  }
+  if (action === "toggle-employee") toast("Usá editar o eliminar usuario para modificar la base JSON.", "error");
   if (action === "read-notification") { const notification = state.notifications.find((n) => n.id === button.dataset.id); notification.read = true; persist(); }
   if (action === "read-all") { state.notifications.forEach((n) => n.read = true); persist(); toast("Notificaciones marcadas como leídas"); }
-  if (action === "reset-demo") { state = resetState(); persist(); toast("Datos de demostración restablecidos"); }
+  if (action === "reset-demo") { state = resetState(state.stateRevision); persist(); toast("Datos iniciales restablecidos"); }
 });
 
 render();
