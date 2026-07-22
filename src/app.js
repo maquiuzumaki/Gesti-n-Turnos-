@@ -31,6 +31,10 @@ let requestFilter = "all";
 const icons = {
   dashboard: "▦", schedule: "▤", employees: "♙", requests: "↔", notifications: "♢", audit: "◷", logout: "↪", plus: "+", menu: "☰",
 };
+const loginIcons = {
+  user: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>`,
+  lock: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><path d="M6.5 11h11a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 17.5 20h-11A1.5 1.5 0 0 1 5 18.5v-6A1.5 1.5 0 0 1 6.5 11Z"/></svg>`,
+};
 const statusText = {
   pending: "Pendiente",
   pendingPartner: "Pendiente de compañero",
@@ -131,8 +135,8 @@ function renderLogin(error = "") {
         <span class="eyebrow">BIENVENIDOS</span>
         <h2>Ingresá a tu espacio</h2>
         ${error ? `<div class="form-error">${error}</div>` : ""}
-        <label>Usuario<input name="username" autocomplete="username" required autofocus /></label>
-        <label>Contraseña<div class="password-field"><input name="password" type="password" autocomplete="current-password" required /><button type="button" class="text-button" data-action="toggle-password">Ver</button></div></label>
+        <label>Usuario<div class="input-field"><span class="input-icon" aria-hidden="true">${loginIcons.user}</span><input name="username" autocomplete="username" required autofocus /></div></label>
+        <label>Contraseña<div class="input-field password-field"><span class="input-icon" aria-hidden="true">${loginIcons.lock}</span><input name="password" type="password" autocomplete="current-password" required /><button type="button" class="text-button" data-action="toggle-password">Ver</button></div></label>
         <button class="button primary wide" type="submit">Ingresar <span>→</span></button>
       </form>
     </section>
