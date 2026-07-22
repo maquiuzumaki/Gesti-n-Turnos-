@@ -572,6 +572,27 @@ function planningLanesStructure(week, conflicts, daysOffSummary) {
   </div>`;
 }
 
+function planningMobileWeekPanel(week, conflicts, daysOffSummary) {
+  const positions = week.operationalPositions.filter((position) => !isOptionalPlanningPosition(position));
+  const assigned = positions.filter((position) => week.assignments.some((assignment) => assignment.positionId === position.id)).length;
+  return `<section class="planning-mobile-panel" aria-label="Grilla semanal móvil">
+    <header class="planning-lanes-head">
+      <div><span class="eyebrow">VISTA MÓVIL</span><h2>Grilla por día</h2><p>Elegí un día para leer turnos, puestos y francos sin mover la pantalla completa.</p></div>
+      <span class="planning-mobile-coverage"><b>${assigned}</b>/<small>${positions.length}</small> cubiertos</span>
+    </header>
+    ${planningLaneDayTabs(week, conflicts)}
+    <div class="planning-lanes-summary">
+      ${planningGoogleStat("Puestos", positions.length, "Semana")}
+      ${planningGoogleStat("Cubiertos", assigned, `${Math.max(positions.length - assigned, 0)} pendientes`)}
+      ${planningGoogleStat("Alertas", conflicts.total, "Revisión")}
+      ${planningGoogleStat("Día", planningDateIndex + 1, "de 7")}
+    </div>
+    ${planningLaneAlerts(week, conflicts)}
+    ${planningLanesStructure(week, conflicts, daysOffSummary)}
+    <footer class="planning-lanes-foot"><span>La grilla completa queda disponible en escritorio.</span><b>${formatIsoDate([...new Set(week.operationalPositions.map((position) => position.date))][planningDateIndex])}</b></footer>
+  </section>`;
+}
+
 function planningLane(week, section, date, conflicts) {
   const positions = week.operationalPositions.filter((position) => position.date === date && position.sector === section.sector && position.shift === section.shift);
   const required = positions.filter((position) => !isOptionalPlanningPosition(position));
@@ -622,7 +643,8 @@ function planningWeekStructure(week, conflicts, showExceptions = true, providedD
     week,
     availabilityMap: buildWeeklyAvailabilityMap(state.employees, week, { requests: state.requests }),
   });
-  return `<div class="planning-position-sectors ${staffView ? "planning-position-sectors--staff" : ""}" aria-label="Puestos operativos">
+  return `${planningMobileWeekPanel(week, conflicts, daysOffSummary)}
+  <div class="planning-position-sectors planning-position-sectors--desktop ${staffView ? "planning-position-sectors--staff" : ""}" aria-label="Puestos operativos">
     ${planningPositionSector(week, { sector: "Cocina", key: "kitchen", icon: "🍳", eyebrow: "SECTOR OPERATIVO" }, conflicts, showExceptions, staffView)}
     ${staffView ? "" : planningDaysOffSector(week, "Cocina", daysOffSummary, conflicts)}
     ${planningPositionSector(week, { sector: "Pisos", key: "floors", icon: "🏥", eyebrow: "COBERTURA POR PISO" }, conflicts, showExceptions, staffView)}
@@ -687,6 +709,18 @@ function planningSpecialChip(assignment, position, employee, visible) {
   return "";
 }
 
+function compactEmployeeName(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "";
+  const first = parts[0];
+  const initials = parts.slice(1).map((part) => `${part[0]}.`).join(" ");
+  return initials ? `${first} ${initials}` : first;
+}
+
+function planningAssignmentName(employee) {
+  return `<strong class="planning-assignment-name planning-assignment-name--full">${escapeHtml(employee.name)}</strong><strong class="planning-assignment-name planning-assignment-name--compact">${escapeHtml(compactEmployeeName(employee.name))}</strong>`;
+}
+
 function emptyPositionState(position, warnings) {
   if (!position) return "";
   if (position.sector === "Pisos") return `<span class="planning-empty-state critical">Sin cobertura</span>`;
@@ -722,7 +756,7 @@ function planningPositionSector(week, section, conflicts, showExceptions = true,
     const emptyState = !employee && !staffView ? emptyPositionState(position, warnings) : "";
     const specialChip = planningSpecialChip(assignment, position, employee, showSpecialChips);
     const assignmentContent = employee
-      ? staffView ? `<strong>${escapeHtml(employee.name)}</strong>` : `<strong>${escapeHtml(employee.name)}</strong><small>${escapeHtml(employee.role)}</small>${specialChip}`
+      ? staffView ? planningAssignmentName(employee) : `${planningAssignmentName(employee)}<small>${escapeHtml(employee.role)}</small>${specialChip}`
       : emptyState;
     return `<div class="planning-position-cell ${staffView ? "staff-view" : ""} ${index === dates.length - 1 ? "is-last-day" : ""} ${warnings.length ? "has-warning" : ""} ${exceptions.length ? "has-exception" : ""}"><button class="planning-position-assignment ${employee ? "assigned" : "empty"} ${staffView ? "staff-view" : ""} ${warnings.length ? "warning" : ""} ${exceptions.length ? "exception" : ""} ${!staffView && !employee && position?.sector === "Pisos" ? "critical-empty" : ""} ${!staffView && !employee && isOptionalPlanningPosition(position) ? "optional-empty" : ""}" type="button" ${editable && position ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"} aria-label="${employee ? `Cambiar asignación de ${position.label}: ${employee.name}` : `Asignar empleado a ${position?.label || row.label}`}">${assignmentContent}${staffView ? "" : `${positionExceptionSummary(exceptions)}${warnings.length ? `<em>${warnings[0]}</em>` : ""}`}</button></div>`;
     }).join("")}`;
