@@ -638,6 +638,7 @@ function staffPublishedPlanningWeekPage(week) {
 
 function planningWeekStructure(week, conflicts, showExceptions = true, providedDaysOffSummary = null, simpleGridView = false) {
   const staffView = simpleGridView || !isAdminRole(user.role);
+  const showDayOffTables = showExceptions || canEditSchedule(user.role);
   const daysOffSummary = providedDaysOffSummary || buildDailyDaysOffSummary({
     employees: state.employees,
     week,
@@ -646,9 +647,9 @@ function planningWeekStructure(week, conflicts, showExceptions = true, providedD
   return `${planningMobileWeekPanel(week, conflicts, daysOffSummary)}
   <div class="planning-position-sectors planning-position-sectors--desktop ${staffView ? "planning-position-sectors--staff" : ""}" aria-label="Puestos operativos">
     ${planningPositionSector(week, { sector: "Cocina", key: "kitchen", icon: "🍳", eyebrow: "SECTOR OPERATIVO" }, conflicts, showExceptions, staffView)}
-    ${staffView ? "" : planningDaysOffSector(week, "Cocina", daysOffSummary, conflicts)}
+    ${showDayOffTables ? planningDaysOffSector(week, "Cocina", daysOffSummary, conflicts) : ""}
     ${planningPositionSector(week, { sector: "Pisos", key: "floors", icon: "🏥", eyebrow: "COBERTURA POR PISO" }, conflicts, showExceptions, staffView)}
-    ${staffView ? "" : planningDaysOffSector(week, "Pisos", daysOffSummary, conflicts)}
+    ${showDayOffTables ? planningDaysOffSector(week, "Pisos", daysOffSummary, conflicts) : ""}
   </div>`;
 }
 
@@ -776,7 +777,8 @@ function planningDaysOffSector(week, sector, daysOffSummary, conflicts) {
   const dayNames = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
   const sectionId = `planning-days-off-${sector.toLowerCase()}`;
-  const title = `FRANCOS ${sector.toUpperCase()}`;
+  const displaySector = sector === "Pisos" ? "Camareras" : sector;
+  const title = `FRANCOS ${displaySector.toUpperCase()}`;
   return `<section class="planning-position-sector reference-sector reference-sector-off" aria-labelledby="${sectionId}">
     <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">○</span><div><span class="reference-sector-eyebrow">DISPONIBILIDAD</span><h2 id="${sectionId}">${title}</h2><p>Francos manuales y F1/F2 calculados por ciclo.</p></div></header>
     <div class="planning-position-board"><div class="planning-position-grid planning-days-off-grid">
