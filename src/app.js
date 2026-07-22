@@ -1,13 +1,20 @@
-import { hydrateStateFromJson, loadState, resetState, saveState, serializeState, STATE_FILE_NAME } from "./services/store.js?v=20260714-13";
+import { authenticate, endSession, hydrateStateFromJson, loadState, resetState, saveState, serializeState, STATE_FILE_NAME } from "./services/store.js?v=20260717-2";
 import { canEditApplications, canEditSchedule, canManageEmployees, canResolveRequests, canSeeAudit, isAdminRole, roleLabel } from "./services/permissions.js?v=20260712-3";
 import { createDraftPlanningWeek, ensureKitchenPlanningSlots } from "./services/planningWeeks.js?v=20260716-1";
-import { applyApprovedAbsenceOrLeave, applyApprovedShiftChange, applyGustavoJulioException, buildDailyDaysOffSummary, buildWeeklyAvailabilityMap, generateFloorCoverageAssignments, generateHabitualAssignments, generateKitchenMorningCollaborationAssignments, revokePlanningApplication } from "./services/planningEngine.js?v=20260715-5";
+import { applyApprovedAbsenceOrLeave, applyApprovedShiftChange, applyGustavoJulioException, buildDailyDaysOffSummary, buildWeeklyAvailabilityMap, generateFloorCoverageAssignments, generateHabitualAssignments, generateKitchenMorningCollaborationAssignments, revokePlanningApplication } from "./services/planningEngine.js?v=20260717-6";
 
+const SESSION_KEY = "uzumaki-user-v5";
+let user = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null");
 const app = document.querySelector("#app");
 const toastRegion = document.querySelector("#toast-region");
-let state = await loadState();
-const SESSION_KEY = "uzumaki-user-v4";
-let user = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null");
+let state;
+try {
+  state = await loadState({ remote: Boolean(user), requireAuth: Boolean(user) });
+} catch {
+  user = null;
+  sessionStorage.removeItem(SESSION_KEY);
+  state = await loadState({ remote: false });
+}
 if (user && !state.users.some((item) => item.id === user.id || item.username === user.username)) {
   user = null;
   sessionStorage.removeItem(SESSION_KEY);
@@ -15,6 +22,9 @@ if (user && !state.users.some((item) => item.id === user.id || item.username ===
 let page = "dashboard";
 let scheduleMode = "official";
 let planningView = "library";
+let planningDateIndex = 0;
+let selectedPlanningWeekIds = new Set();
+let sidebarCollapsed = sessionStorage.getItem("uzumaki-sidebar-collapsed") === "true";
 let employeeSearch = "";
 let requestFilter = "all";
 
@@ -100,11 +110,12 @@ function persistenceActions() {
 
 function render() {
   if (!user) return renderLogin();
-  app.innerHTML = `<div class="app-shell">
+  const contentClass = page === "dashboard" ? "content dashboard-content" : "content";
+  app.innerHTML = `<div class="app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}">
     ${sidebar()}
     <div class="workspace">
       ${topbar()}
-      <main class="content" id="content">${renderPage()}</main>
+      <main class="${contentClass}" id="content">${renderPage()}</main>
     </div>
   </div>`;
 }
@@ -112,25 +123,17 @@ function render() {
 function renderLogin(error = "") {
   app.innerHTML = `<main class="login-page">
     <section class="login-brand">
-      <div class="brand-mark large"><img src="./ICONO.webp" alt="" /></div>
-      <div class="login-copy">
-        <span class="eyebrow light">Plataforma de gestión operativa para servicios de alimentación</span>
-      </div>
+      <div class="login-brand-header"><span class="brand-mark large"><img src="./assets/ICONO.webp" alt="" /></span><div><strong>UZUMAKI</strong><small>Gestión operativa</small></div></div>
     </section>
     <section class="login-panel">
       <form class="login-card" id="login-form">
-        <div class="mobile-logo"><span class="brand-mark"><img src="./ICONO.webp" alt="" /></span><strong>Uzumaki</strong></div>
-        <span class="eyebrow">BIENVENIDA</span>
+        <div class="mobile-logo"><span class="brand-mark"><img src="./assets/ICONO.webp" alt="" /></span><div><strong>Uzumaki</strong><small>Gestión operativa</small></div></div>
+        <span class="eyebrow">BIENVENIDOS</span>
         <h2>Ingresá a tu espacio</h2>
-        <p class="muted">Usá tu usuario y contraseña.</p>
         ${error ? `<div class="form-error">${error}</div>` : ""}
-        <label>Usuario<input name="username" autocomplete="username" value="maqui" required /></label>
-        <label>Contraseña<div class="password-field"><input name="password" type="password" autocomplete="current-password" value="demo123" required /><button type="button" class="text-button" data-action="toggle-password">Ver</button></div></label>
+        <label>Usuario<input name="username" autocomplete="username" required autofocus /></label>
+        <label>Contraseña<div class="password-field"><input name="password" type="password" autocomplete="current-password" required /><button type="button" class="text-button" data-action="toggle-password">Ver</button></div></label>
         <button class="button primary wide" type="submit">Ingresar <span>→</span></button>
-        <div class="demo-access">
-          <p>Accesos rápidos</p>
-          <div>${state.users.map((item) => `<button type="button" class="chip" data-action="demo-login" data-username="${item.username}">${item.username}</button>`).join("")}</div>
-        </div>
       </form>
     </section>
   </main>`;
@@ -141,10 +144,10 @@ function sidebar() {
   const items = admin
     ? [["dashboard", "Resumen"], ["schedule", "Grilla operativa"], ["employees", "Personal"], ["requests", "Solicitudes"], ["notifications", "Notificaciones"], ...(canSeeAudit(user.role) ? [["audit", "Auditoría"]] : [])]
     : [["dashboard", "Mi resumen"], ["schedule", "Mi semana"], ["requests", "Mis solicitudes"], ["notifications", "Notificaciones"]];
-  return `<aside class="sidebar" id="sidebar">
-    <div class="brand"><span class="brand-mark"><img src="./ICONO.webp" alt="" /></span><div><strong>Uzumaki</strong><small>Gestión operativa</small></div></div>
-    <nav>${items.map(([id, label]) => `<button class="nav-item ${page === id ? "active" : ""}" data-page="${id}"><span>${icons[id]}</span>${label}${id === "notifications" && unreadCount() ? `<b>${unreadCount()}</b>` : ""}</button>`).join("")}</nav>
-    <div class="sidebar-foot"><div class="mini-avatar">${initials(user.name)}</div><div><strong>${user.name}</strong><small>${roleLabel[user.role]}</small></div><button title="Cerrar sesión" data-action="logout">${icons.logout}</button></div>
+  return `<aside class="sidebar ${sidebarCollapsed ? "collapsed" : ""}" id="sidebar" aria-label="Navegación principal">
+    <button class="brand" type="button" data-action="toggle-sidebar" aria-label="${sidebarCollapsed ? "Expandir menú" : "Contraer menú"}" title="${sidebarCollapsed ? "Expandir menú" : "Contraer menú"}"><span class="brand-mark"><img src="./assets/ICONO.webp" alt="" /></span><div><strong>Uzumaki</strong><small>Gestión operativa</small></div></button>
+    <nav>${items.map(([id, label]) => `<button class="nav-item ${page === id ? "active" : ""}" data-page="${id}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"><span class="nav-icon">${icons[id]}</span><span class="nav-label">${escapeHtml(label)}</span>${id === "notifications" && unreadCount() ? `<b>${unreadCount()}</b>` : ""}</button>`).join("")}</nav>
+    <div class="sidebar-foot"><div class="mini-avatar">${initials(user.name)}</div><div><strong>${escapeHtml(user.name)}</strong><small>${escapeHtml(roleLabel[user.role])}</small></div><button title="Cerrar sesión" data-action="logout" aria-label="Cerrar sesión">${icons.logout}</button></div>
   </aside>`;
 }
 
@@ -160,51 +163,47 @@ function renderPage() {
 }
 
 function pageHeading(kicker, title, description, action = "") {
-  return `<div class="page-heading"><div><span class="eyebrow">${escapeHtml(kicker)}</span><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p></div>${action}</div>`;
+  return `<div class="page-heading"><div><span class="eyebrow">${escapeHtml(kicker)}</span><h1>${escapeHtml(title)}</h1>${description ? `<p>${escapeHtml(description)}</p>` : ""}</div>${action}</div>`;
 }
 
 function dashboardPage() {
   if (!isAdminRole(user.role)) return staffDashboard();
-  const active = state.employees.filter((e) => e.status === "active").length;
+  const active = state.employees.filter((e) => e.status === "active" && e.participaEnOperacion !== false).length;
   const pending = state.requests.filter((r) => activeRequestStatuses.includes(r.status)).length;
-  const absent = state.schedule.filter((s) => ["sick", "leave"].includes(s.state) && s.day === state.days[0]).length;
-  const todayShifts = state.schedule.filter((s) => s.day === state.days[0]);
-  return `${pageHeading("VIERNES, 3 DE JULIO DE 2026", `Buen día, ${user.name}`, "Este es el pulso de la operación para hoy.", `<button class="button primary" data-page="schedule">Ver grilla <span>→</span></button>`)}
+  const snapshot = operationalSnapshot();
+  const critical = snapshot.rows.filter((row) => row.missing).length;
+  return `${pageHeading(snapshot.label, `Buen día, ${user.name.split(" ")[0]}`, "", `<button class="button primary" data-page="schedule">Abrir grilla <span>→</span></button>`)}
     <section class="metric-grid">
-      ${metric("Personal activo", active, "Base inicial vigente", "sun", "♙")}
-      ${metric("Programados hoy", todayShifts.length, `${Math.max(0, todayShifts.length - absent)} confirmados`, "blue", "▤")}
-      ${metric("Solicitudes pendientes", pending, pending ? "Requieren atención" : "Todo al día", "amber", "↔")}
-      ${metric("Ausencias hoy", absent, absent ? "1 cobertura a revisar" : "Sin novedades", "rose", "!")}
+      ${metric("Dotación operativa", `${snapshot.assigned}/${snapshot.total}`, critical ? `${critical} sin cubrir` : "Cobertura completa", critical ? "rose" : "sun", "♙")}
+      ${metric("Cobertura", `${snapshot.coverage}%`, snapshot.coverage === 100 ? "Todos los puestos confirmados" : "Revisá puestos pendientes", snapshot.coverage === 100 ? "blue" : "amber", "▤")}
+      ${metric("Solicitudes activas", pending, pending ? "Requieren atención" : "Todo al día", "amber", "↔")}
+      ${metric("Personal operativo", active, `${state.employees.length} personas registradas`, "sun", "◉")}
     </section>
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <span class="eyebrow">ESTADO DEL SISTEMA</span>
-          <h2>Base de datos simulada</h2>
-        </div>
-        ${persistenceActions()}
-      </div>
-      <div class="metric-grid" style="margin-top: 12px;">
-        ${metric("Roles operativos", Object.keys(state.catalogs.rolesOperativos).length, "Catálogo base", "blue", "♙")}
-        ${metric("Roles del sistema", Object.keys(state.catalogs.rolesSistema).length, "Catálogo base", "amber", "◷")}
-        ${metric("Empleados cargados", state.employees.length, `${state.employees.filter((employee) => employee.participaEnOperacion).length} operativos`, "sun", "♟")}
-        ${metric("Solicitudes cargadas", state.requests.length, "Sin datos aún", "rose", "↔")}
-      </div>
-      <div class="dashboard-grid" style="margin-top: 14px; grid-template-columns: repeat(3, minmax(0, 1fr));">
-        <div>
-          <strong>Sectores</strong>
-          <p>${Object.values(state.catalogs.sectores).map((sector) => sector.nombre).join(" · ")}</p>
-        </div>
-        <div>
-          <strong>Turnos</strong>
-          <p>${Object.values(state.catalogs.turnos).map((turno) => turno.nombre).join(" · ")}</p>
-        </div>
-        <div>
-          <strong>Pisos</strong>
-          <p>${Object.values(state.catalogs.pisos).map((piso) => `Piso ${piso.numero}`).join(" · ")}</p>
-        </div>
-      </div>
-    </section>`;
+    <section class="dashboard-grid operational-dashboard"><article class="panel coverage-panel"><div class="panel-head"><div><span class="eyebrow">COBERTURA POR SECTOR</span><h2>Estado de los próximos turnos</h2><p class="muted">La lectura se ordena por impacto operativo.</p></div><button class="button secondary" data-page="schedule">Ver grilla</button></div><div class="coverage-list">${snapshot.rows.map((row) => `<div class="coverage-row"><div><strong>${row.label}</strong><small>${row.assigned}/${row.total} puestos asignados</small></div><div class="coverage-track"><span class="${row.missing ? "risk" : row.coverage < 100 ? "warning" : ""}" style="width:${row.coverage}%"></span></div><span class="coverage-state ${row.missing ? "risk" : row.coverage < 100 ? "warning" : "ok"}">${row.missing ? "Sin cubrir" : row.coverage < 100 ? "Pendiente" : "Completo"}</span></div>`).join("")}</div></article><article class="panel decision-panel"><div class="panel-head"><div><span class="eyebrow">BANDEJA DE DECISIONES</span><h2>Para atender</h2></div><button class="text-link" data-page="requests">Ver todo</button></div><div class="decision-list">${dashboardDecisions(snapshot).join("")}</div></article></section>`;
+}
+
+function operationalSnapshot() {
+  const week = state.planningWeek;
+  const dates = [...new Set((week?.operationalPositions || []).map((position) => position.date))].sort();
+  const date = dates.find((item) => item >= new Date().toISOString().slice(0, 10)) || dates[0];
+  const positions = (week?.operationalPositions || []).filter((position) => position.date === date && !isOptionalPlanningPosition(position));
+  const assignments = new Set((week?.assignments || []).map((assignment) => assignment.positionId));
+  const groups = [["Cocina", "Mañana"], ["Cocina", "Tarde"], ["Pisos", "Mañana"], ["Pisos", "Tarde"]];
+  const rows = groups.map(([sector, shift]) => {
+    const targets = positions.filter((position) => position.sector === sector && position.shift === shift);
+    const assigned = targets.filter((position) => assignments.has(position.id)).length;
+    const total = targets.length;
+    return { label: `${sector} · ${shift}`, assigned, total, missing: Math.max(0, total - assigned), coverage: total ? Math.round((assigned / total) * 100) : 100 };
+  }).filter((row) => row.total);
+  const assigned = rows.reduce((total, row) => total + row.assigned, 0);
+  const total = rows.reduce((sum, row) => sum + row.total, 0);
+  return { rows, assigned, total, coverage: total ? Math.round((assigned / total) * 100) : 0, label: date ? `OPERACIÓN · ${formatIsoDate(date).toUpperCase()}` : "OPERACIÓN" };
+}
+
+function dashboardDecisions(snapshot) {
+  const decisions = snapshot.rows.filter((row) => row.missing).map((row) => ({ icon: "!", title: `Asignar cobertura para ${row.label}`, detail: `${row.missing} ${row.missing === 1 ? "puesto pendiente" : "puestos pendientes"}`, page: "schedule", tone: "risk" }));
+  state.requests.filter((request) => activeRequestStatuses.includes(request.status)).slice(0, 3).forEach((request) => decisions.push({ icon: "↔", title: `${requestTypes[normalizeRequestForView(request).type]} de ${requestEmployeeName(request.employeeId)}`, detail: statusText[normalizeRequestForView(request).status], page: "requests", tone: "warning" }));
+  return (decisions.length ? decisions : [{ icon: "✓", title: "Operación al día", detail: "No hay acciones pendientes", page: "schedule", tone: "ok" }]).slice(0, 4).map((item) => `<button class="decision-item ${item.tone}" data-page="${item.page}"><span>${item.icon}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.detail)}</small></div><b>›</b></button>`);
 }
 
 function staffDashboard() {
@@ -429,18 +428,28 @@ function planningWeekStatusIcon(status) {
 }
 
 function planningWeekLifecycleActions(week) {
-  const backButton = `<button class="button secondary" data-action="open-planning-library">← Grillas almacenadas</button>`;
-  const saveButton = `<button class="button secondary" data-action="save-planning-week">Guardar</button>`;
-  const suggestButton = `<button class="button secondary magic-pulse" data-action="generate-planning-proposal">Generar propuesta</button>`;
-  const publishButton = `<button class="button primary" data-action="publish-planning-week">${week.status === "paused" ? "Republicar" : "Publicar grilla"}</button>`;
-  const commonActions = `${backButton}${suggestButton}${saveButton}<button class="button secondary" data-action="new-week-exception">Registrar excepción</button>`;
+  const saveButton = `<button class="button secondary planning-icon-action" data-action="save-planning-week" aria-label="Guardar grilla" title="Guardar grilla"><span aria-hidden="true">⌑</span></button>`;
+  const suggestButton = `<button class="button planning-proposal-action magic-pulse" data-action="generate-planning-proposal" title="Generar propuesta automática"><span aria-hidden="true">✦</span><span>Propuesta</span></button>`;
+  const exceptionButton = `<button class="button secondary planning-exception-action" data-action="new-week-exception">Excepción</button>`;
+  const publishButton = `<button class="button primary planning-publish-action" data-action="publish-planning-week">${week.status === "paused" ? "Republicar" : "Publicar"}</button>`;
+  const deleteButton = `<button class="button danger-soft planning-icon-action planning-delete-action" data-action="delete-planning-week" aria-label="Eliminar grilla" title="Eliminar grilla"><span aria-hidden="true">🗑</span></button>`;
+  const moreActions = (items) => `<details class="planning-more-actions"><summary aria-label="Más acciones" title="Más acciones"><span aria-hidden="true">⋯</span></summary><div>${items}</div></details>`;
+  const commonActions = `${suggestButton}${saveButton}${exceptionButton}`;
   if (week.status === "published") {
-    return `<div class="heading-actions">${commonActions}<button class="button secondary" data-action="pause-planning-week">Pausar publicación</button><button class="button secondary" data-action="draft-planning-week">Volver a borrador</button><button class="button danger-soft" data-action="delete-planning-week">Eliminar grilla</button></div>`;
+    return `<div class="heading-actions planning-compact-actions">${commonActions}${moreActions(`<button data-action="pause-planning-week">Pausar publicación</button><button data-action="draft-planning-week">Volver a borrador</button>`)}${deleteButton}</div>`;
   }
   if (week.status === "paused") {
-    return `<div class="heading-actions">${commonActions}<button class="button secondary" data-action="draft-planning-week">Volver a borrador</button><button class="button danger-soft" data-action="delete-planning-week">Eliminar grilla</button>${publishButton}</div>`;
+    return `<div class="heading-actions planning-compact-actions">${commonActions}${publishButton}${moreActions(`<button data-action="draft-planning-week">Volver a borrador</button>`)}${deleteButton}</div>`;
   }
-  return `<div class="heading-actions">${commonActions}<button class="button danger-soft" data-action="delete-planning-week">Eliminar grilla</button>${publishButton}</div>`;
+  return `<div class="heading-actions planning-compact-actions">${commonActions}${publishButton}${deleteButton}</div>`;
+}
+
+function planningCompactHeading(week, statusLabel, actions) {
+  return `<header class="planning-compact-heading">
+    <button class="planning-compact-back" data-action="open-planning-library" aria-label="Volver a grillas almacenadas" title="Volver a grillas almacenadas"><span aria-hidden="true">←</span></button>
+    <div class="planning-compact-title"><span class="eyebrow">PLANIFICACIÓN SEMANAL</span><div><h1>${escapeHtml(week.name)}</h1><span class="week-status ${week.status}">${statusLabel}</span></div><p>${formatIsoDate(week.startDate)} — ${formatIsoDate(week.endDate)}</p></div>
+    ${actions}
+  </header>`;
 }
 
 function schedulePage() {
@@ -480,14 +489,13 @@ function planningWeekHasUnsavedChanges(week) {
 function planningLibraryPage() {
   const canCreate = canEditSchedule(user.role);
   const weeks = planningSnapshots();
-  const currentIsSaved = state.planningWeek && !planningWeekHasUnsavedChanges(state.planningWeek);
-  const currentNotice = state.planningWeek
-    ? `<div class="planning-library-current"><div><strong>${escapeHtml(state.planningWeek.name)}</strong><small>${currentIsSaved ? "La versión en edición ya está almacenada." : "Tiene cambios aún no guardados en la base."}</small></div><button class="button secondary" data-action="open-current-planning">Abrir edición</button></div>`
-    : "";
+  const storedWeekIds = new Set(weeks.map((week) => week.id));
+  selectedPlanningWeekIds = new Set([...selectedPlanningWeekIds].filter((id) => storedWeekIds.has(id)));
+  const selectedCount = selectedPlanningWeekIds.size;
   return `${pageHeading("PLANIFICACIÓN SEMANAL", "Grillas almacenadas", "Consultá semanas anteriores, retomá un borrador o creá una nueva planificación.", canCreate ? `<button class="button primary" data-action="new-planning-week">${icons.plus} Nueva grilla</button>` : "")}
-    ${currentNotice}
     <section class="planning-library" aria-label="Grillas guardadas">
       <div class="planning-library-head"><div><span class="eyebrow">HISTORIAL</span><h2>${weeks.length ? `${weeks.length} grillas guardadas` : "Todavía no hay grillas guardadas"}</h2></div><span class="planning-library-file">${STATE_FILE_NAME}</span></div>
+      ${selectedCount ? `<div class="planning-library-selection"><span><b>${selectedCount}</b> ${selectedCount === 1 ? "grilla seleccionada" : "grillas seleccionadas"}</span><div><button class="button secondary" data-action="clear-planning-week-selection">Limpiar</button><button class="button danger-soft" data-action="delete-selected-planning-weeks">Eliminar seleccionadas</button></div></div>` : ""}
       ${weeks.length ? `<div class="planning-library-list">${weeks.map(planningLibraryItem).join("")}</div>` : empty("Guardá una planificación para que quede disponible aquí.")}
     </section>`;
 }
@@ -496,7 +504,9 @@ function planningLibraryItem(week) {
   const assigned = (week.assignments || []).length;
   const total = (week.operationalPositions || []).length;
   const isCurrent = state.planningWeek?.id === week.id;
-  return `<article class="planning-library-item ${isCurrent ? "current" : ""}">
+  const isSelected = selectedPlanningWeekIds.has(week.id);
+  return `<article class="planning-library-item ${isCurrent ? "current" : ""} ${isSelected ? "selected" : ""}">
+    <label class="planning-library-select" title="Seleccionar ${escapeHtml(week.name)}"><input type="checkbox" name="planning-week-selection" value="${week.id}" ${isSelected ? "checked" : ""} /><span class="sr-only">Seleccionar ${escapeHtml(week.name)}</span></label>
     <div class="planning-library-icon">▦</div>
     <div class="planning-library-main"><strong>${escapeHtml(week.name)}</strong><small>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)} · ${assigned}/${total} puestos asignados</small>${week.savedAt ? `<small>Guardada ${formatDateTime(week.savedAt)}</small>` : ""}</div>
     <span class="week-status ${week.status || "draft"}">${planningWeekStatusLabel(week.status)}</span>
@@ -521,40 +531,70 @@ function planningWeekPage() {
         <div class="week-empty-explanation"><strong>¿Qué se creará?</strong><p>Un contenedor con nombre, período y los puestos operativos vacíos de sus siete días. No copiará personas, francos, coberturas ni información de otra semana.</p></div>
       </section>`;
   }
-  const assignmentCount = week.assignments.length;
-  const emptyPositionCount = week.operationalPositions.length - assignmentCount;
-  const availabilityMap = buildWeeklyAvailabilityMap(state.employees, week, { requests: state.requests });
-  const daysOffSummary = buildDailyDaysOffSummary({ employees: state.employees, week, availabilityMap });
-  const visibleDaysOffCount = Object.values(daysOffSummary).reduce((total, sectorMap) => total + Object.values(sectorMap).reduce((sectorTotal, records) => sectorTotal + records.length, 0), 0);
-  const manualDaysOffCount = week.daysOff?.length || 0;
-  const exceptionCount = week.exceptions?.length || 0;
   const conflicts = detectPlanningConflicts(week);
-  const isPublished = week.status === "published";
-  const isPaused = week.status === "paused";
   const statusLabel = planningWeekStatusLabel(week.status);
   const publishAction = canCreate ? planningWeekLifecycleActions(week) : "";
-  return `${pageHeading("PLANIFICACIÓN SEMANAL", week.name, `${formatIsoDate(week.startDate)} — ${formatIsoDate(week.endDate)}`, publishAction)}
-    <section class="planning-google-panel ${planningWeekStatusClass(week.status)}">
-      <div class="planning-google-head">
-        <div><span class="eyebrow">${isPublished ? "PUBLICADA" : isPaused ? "PAUSADA" : "BORRADOR"}</span><h2>${escapeHtml(week.name)}</h2><p>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)}${week.savedAt ? ` · Guardada ${formatDateTime(week.savedAt)}` : ""}</p></div>
-        <span class="week-status ${week.status}">${statusLabel}</span>
-      </div>
-      <div class="planning-google-stats" aria-label="Resumen de la grilla">
-        ${planningGoogleStat("Asignados", assignmentCount, `${week.operationalPositions.length} puestos`)}
-        ${planningGoogleStat("Pendientes", emptyPositionCount, emptyPositionCount ? "Revisar" : "Completa")}
-        ${planningGoogleStat("Francos", visibleDaysOffCount, visibleDaysOffCount ? "Calculados" : "Sin francos")}
-        ${planningGoogleStat("Advertencias", conflicts.total, conflicts.total ? "Atención" : "Sin conflictos")}
-      </div>
-      ${planningConflictPanel(conflicts)}
-      ${weeklyExceptionsPanel(week, true)}
-      ${planningWeekStructure(week, conflicts, true, daysOffSummary)}
-      <div class="week-empty-collections" aria-label="Contenido inicial de la semana">
-        <span><b>Puestos operativos</b><small>${week.operationalPositions.length} puestos</small></span>
-        <span><b>Asignaciones</b><small>${assignmentCount} manuales</small></span>
-        <span><b>Francos</b><small>${visibleDaysOffCount ? `${visibleDaysOffCount} visibles · ${manualDaysOffCount} manuales` : "Vacío"}</small></span>
-        <span><b>Excepciones</b><small>${exceptionCount ? `${exceptionCount} ajustes` : "Vacío"}</small></span>
-      </div>
-    </section>`;
+  return `${planningCompactHeading(week, statusLabel, publishAction)}
+    ${planningWeekStructure(week, conflicts, false, null, true)}`;
+}
+
+function planningLaneDayTabs(week, conflicts) {
+  const dates = [...new Set(week.operationalPositions.map((position) => position.date))];
+  planningDateIndex = Math.min(Math.max(planningDateIndex, 0), Math.max(dates.length - 1, 0));
+  return `<div class="planning-lane-days" aria-label="Días de la grilla">${dates.map((date, index) => {
+    const positions = week.operationalPositions.filter((position) => position.date === date && !isOptionalPlanningPosition(position));
+    const assigned = positions.filter((position) => week.assignments.some((assignment) => assignment.positionId === position.id)).length;
+    const warnings = positions.reduce((count, position) => count + (conflicts.positionWarnings.get(position.id) || []).length, 0);
+    return `<button class="planning-lane-day ${planningDateIndex === index ? "active" : ""} ${warnings ? "has-alert" : ""}" data-action="select-planning-date" data-date-index="${index}"><span>${["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"][index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong><small>${assigned}/${positions.length}${warnings ? " · !" : ""}</small></button>`;
+  }).join("")}</div>`;
+}
+
+function planningLaneAlerts(week, conflicts) {
+  const dates = [...new Set(week.operationalPositions.map((position) => position.date))];
+  const date = dates[planningDateIndex];
+  const items = conflicts.items.filter((item) => item.text.includes(formatIsoDate(date))).slice(0, 2);
+  if (!items.length) return `<div class="planning-lane-alert ok"><span>✓</span><div><strong>La jornada seleccionada no tiene alertas críticas</strong><p>Podés revisar puestos o continuar con el próximo día.</p></div></div>`;
+  return `<div class="planning-lane-alert"><span>!</span><div><strong>${items.length} ${items.length === 1 ? "alerta" : "alertas"} para ${formatIsoDate(date)}</strong><p>${items.map((item) => escapeHtml(item.text.replace(`${formatIsoDate(date)} · `, ""))).join(" · ")}</p></div><button class="button secondary" data-action="new-week-exception">Registrar excepción</button></div>`;
+}
+
+function planningLanesStructure(week, conflicts, daysOffSummary) {
+  const dates = [...new Set(week.operationalPositions.map((position) => position.date))];
+  const date = dates[planningDateIndex];
+  const sections = [
+    { sector: "Cocina", shift: "Mañana", icon: "♨", label: "Cocina · Mañana", time: "06:00–14:00", tone: "kitchen" },
+    { sector: "Cocina", shift: "Tarde", icon: "♨", label: "Cocina · Tarde", time: "14:00–21:30", tone: "kitchen" },
+    { sector: "Pisos", shift: "Mañana", icon: "▦", label: "Pisos · Mañana", time: "06:00–14:00", tone: "floors" },
+    { sector: "Pisos", shift: "Tarde", icon: "▦", label: "Pisos · Tarde", time: "14:00–21:30", tone: "floors" },
+  ];
+  return `<div class="planning-lanes" aria-label="Carriles operativos">${sections.map((section) => planningLane(week, section, date, conflicts)).join("")}
+    ${planningLaneDaysOff(week, "Cocina", date, daysOffSummary, conflicts)}
+    ${planningLaneDaysOff(week, "Pisos", date, daysOffSummary, conflicts)}
+  </div>`;
+}
+
+function planningLane(week, section, date, conflicts) {
+  const positions = week.operationalPositions.filter((position) => position.date === date && position.sector === section.sector && position.shift === section.shift);
+  const required = positions.filter((position) => !isOptionalPlanningPosition(position));
+  const assigned = required.filter((position) => week.assignments.some((assignment) => assignment.positionId === position.id)).length;
+  return `<section class="planning-lane ${section.tone}"><header><div class="planning-lane-title"><span>${section.icon}</span><div><h3>${section.label}</h3><small>${section.time}</small></div></div><b class="planning-lane-status ${assigned === required.length ? "ok" : "warning"}">${assigned}/${required.length} cubiertos</b></header><div class="planning-lane-slots">${positions.map((position) => planningLaneSlot(week, position, conflicts)).join("")}</div><footer><span>${positions.length} puestos visibles</span><small>${assigned === required.length ? "Sin pendientes" : `${required.length - assigned} por resolver`}</small></footer></section>`;
+}
+
+function planningLaneSlot(week, position, conflicts) {
+  const assignment = week.assignments.find((item) => item.positionId === position.id);
+  const employee = assignment ? state.employees.find((item) => item.id === assignment.employeeId) : null;
+  const warnings = conflicts.positionWarnings.get(position.id) || [];
+  const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
+  const optional = isOptionalPlanningPosition(position);
+  const stateClass = employee ? "assigned" : optional ? "optional" : "unfilled";
+  const label = employee ? employee.name : optional ? "Apoyo opcional" : position.sector === "Pisos" ? "Sin cobertura" : "Sin asignar";
+  const detail = employee ? `${employee.role}${warnings.length ? ` · ${warnings[0]}` : ""}` : optional ? "No requerido para publicar" : warnings[0] || "Elegí una persona compatible";
+  return `<button class="planning-lane-slot ${stateClass} ${warnings.length ? "has-warning" : ""}" type="button" ${editable ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"}><span class="planning-lane-avatar">${employee ? escapeHtml(employee.initials || initials(employee.name)) : optional ? "+" : "!"}</span><span><strong>${escapeHtml(position.label.replace(`${position.sector} ${position.shift} · `, ""))}</strong><small>${escapeHtml(label)} · ${escapeHtml(detail)}</small></span><i>›</i></button>`;
+}
+
+function planningLaneDaysOff(week, sector, date, daysOffSummary, conflicts) {
+  const dayOffs = daysOffSummary?.[sector]?.[date] || [];
+  const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
+  return `<section class="planning-lane planning-lane-off"><header><div class="planning-lane-title"><span>○</span><div><h3>Francos · ${sector}</h3><small>${dayOffs.length ? `${dayOffs.length} personas disponibles` : "Sin francos cargados"}</small></div></div><b class="planning-lane-status neutral">${dayOffs.length}</b></header><button class="planning-lane-days-off" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"}>${dayOffs.length ? dayOffs.map((dayOff) => `<span class="planning-lane-off-chip ${dayOff.source === "manualDayOff" ? "manual" : ""}"><strong>${escapeHtml(dayOff.name)}</strong><small>${escapeHtml(dayOff.type || "Franco")}</small></span>`).join("") : "Agregar franco"}</button></section>`;
 }
 
 function planningGoogleStat(label, value, meta) {
@@ -575,17 +615,18 @@ function staffPublishedPlanningWeekPage(week) {
     </section>`;
 }
 
-function planningWeekStructure(week, conflicts, showExceptions = true, providedDaysOffSummary = null) {
+function planningWeekStructure(week, conflicts, showExceptions = true, providedDaysOffSummary = null, simpleGridView = false) {
+  const staffView = simpleGridView || !isAdminRole(user.role);
   const daysOffSummary = providedDaysOffSummary || buildDailyDaysOffSummary({
     employees: state.employees,
     week,
     availabilityMap: buildWeeklyAvailabilityMap(state.employees, week, { requests: state.requests }),
   });
-  return `<div class="planning-position-sectors" aria-label="Puestos operativos">
-    ${planningPositionSector(week, { sector: "Cocina", key: "kitchen", icon: "🍳", eyebrow: "SECTOR OPERATIVO", description: "Puestos operativos y espacios de apoyo por turno." }, conflicts, showExceptions)}
-    ${planningDaysOffSector(week, "Cocina", daysOffSummary, conflicts)}
-    ${planningPositionSector(week, { sector: "Pisos", key: "floors", icon: "🏥", eyebrow: "COBERTURA POR PISO", description: "Seis puestos diarios para los tres pisos y ambos turnos." }, conflicts, showExceptions)}
-    ${planningDaysOffSector(week, "Pisos", daysOffSummary, conflicts)}
+  return `<div class="planning-position-sectors ${staffView ? "planning-position-sectors--staff" : ""}" aria-label="Puestos operativos">
+    ${planningPositionSector(week, { sector: "Cocina", key: "kitchen", icon: "🍳", eyebrow: "SECTOR OPERATIVO" }, conflicts, showExceptions, staffView)}
+    ${staffView ? "" : planningDaysOffSector(week, "Cocina", daysOffSummary, conflicts)}
+    ${planningPositionSector(week, { sector: "Pisos", key: "floors", icon: "🏥", eyebrow: "COBERTURA POR PISO" }, conflicts, showExceptions, staffView)}
+    ${staffView ? "" : planningDaysOffSector(week, "Pisos", daysOffSummary, conflicts)}
   </div>`;
 }
 
@@ -654,7 +695,7 @@ function emptyPositionState(position, warnings) {
   return warnings.length ? "" : `<span class="planning-empty-state pending">Pendiente</span>`;
 }
 
-function planningPositionSector(week, section, conflicts, showExceptions = true) {
+function planningPositionSector(week, section, conflicts, showExceptions = true, staffView = false) {
   const positions = week.operationalPositions.filter((position) => position.sector === section.sector);
   const dates = [...new Set(positions.map((position) => position.date))];
   const rows = positions
@@ -662,22 +703,36 @@ function planningPositionSector(week, section, conflicts, showExceptions = true)
     .sort((a, b) => a.shift.localeCompare(b.shift) || (a.slot || 0) - (b.slot || 0) || a.label.localeCompare(b.label));
   const dayNames = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
-  const showSpecialChips = canEditSchedule(user.role);
+  const showSpecialChips = !staffView && canEditSchedule(user.role);
+  const shifts = [
+    { value: "Mañana", modifier: "morning", icon: "☼", label: "TURNO MAÑANA" },
+    { value: "Tarde", modifier: "afternoon", icon: "☾", label: "TURNO TARDE" },
+  ];
+  const rowsByShift = Object.fromEntries(shifts.map((shift) => [shift.value, rows.filter((row) => row.shift === shift.value)]));
+  const rowMarkup = (row) => {
+    const [labelTitle, ...details] = row.label.split(" · ");
+    const title = row.sector === "Cocina" ? "Cocina" : row.floor ? `${row.floor} piso` : labelTitle;
+    const detail = details.join(" · ");
+    return `<div class="planning-position-row-label shift-${row.shift === "Mañana" ? "morning" : "afternoon"}"><strong>${title}</strong>${detail ? `<small>${detail}</small>` : ""}</div>${dates.map((date, index) => {
+    const position = positions.find((item) => item.templateId === row.templateId && item.date === date);
+    const assignment = position ? week.assignments.find((item) => item.positionId === position.id) : null;
+    const employee = assignment ? state.employees.find((item) => item.id === assignment.employeeId) : null;
+    const warnings = !staffView && position ? conflicts.positionWarnings.get(position.id) || [] : [];
+    const exceptions = showExceptions && position ? positionExceptions(week, position.id) : [];
+    const emptyState = !employee && !staffView ? emptyPositionState(position, warnings) : "";
+    const specialChip = planningSpecialChip(assignment, position, employee, showSpecialChips);
+    const assignmentContent = employee
+      ? staffView ? `<strong>${escapeHtml(employee.name)}</strong>` : `<strong>${escapeHtml(employee.name)}</strong><small>${escapeHtml(employee.role)}</small>${specialChip}`
+      : emptyState;
+    return `<div class="planning-position-cell ${staffView ? "staff-view" : ""} ${index === dates.length - 1 ? "is-last-day" : ""} ${warnings.length ? "has-warning" : ""} ${exceptions.length ? "has-exception" : ""}"><button class="planning-position-assignment ${employee ? "assigned" : "empty"} ${staffView ? "staff-view" : ""} ${warnings.length ? "warning" : ""} ${exceptions.length ? "exception" : ""} ${!staffView && !employee && position?.sector === "Pisos" ? "critical-empty" : ""} ${!staffView && !employee && isOptionalPlanningPosition(position) ? "optional-empty" : ""}" type="button" ${editable && position ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"} aria-label="${employee ? `Cambiar asignación de ${position.label}: ${employee.name}` : `Asignar empleado a ${position?.label || row.label}`}">${assignmentContent}${staffView ? "" : `${positionExceptionSummary(exceptions)}${warnings.length ? `<em>${warnings[0]}</em>` : ""}`}</button></div>`;
+    }).join("")}`;
+  };
   return `<section class="planning-position-sector reference-sector reference-sector-${section.key}" aria-labelledby="planning-${section.key}-title">
-    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">${section.icon}</span><div><span class="reference-sector-eyebrow">${section.eyebrow}</span><h2 id="planning-${section.key}-title">${section.sector}</h2><p>${section.description}</p></div></header>
-    <div class="planning-position-board"><div class="planning-position-grid">
-      <div class="planning-position-corner"><strong>Puesto</strong><small>${week.assignments.length} asignados</small></div>
-      ${dates.map((date, index) => `<div class="planning-position-day"><span>${dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
-      ${rows.map((row) => `<div class="planning-position-row-label ${row.shift === "Mañana" ? "shift-morning" : "shift-afternoon"}"><strong>${row.label}</strong><small>Turno ${row.shift}</small></div>${dates.map((date) => {
-        const position = positions.find((item) => item.templateId === row.templateId && item.date === date);
-        const assignment = position ? week.assignments.find((item) => item.positionId === position.id) : null;
-        const employee = assignment ? state.employees.find((item) => item.id === assignment.employeeId) : null;
-        const warnings = position ? conflicts.positionWarnings.get(position.id) || [] : [];
-        const exceptions = showExceptions && position ? positionExceptions(week, position.id) : [];
-        const emptyState = !employee ? emptyPositionState(position, warnings) : "";
-        const specialChip = planningSpecialChip(assignment, position, employee, showSpecialChips);
-        return `<div class="planning-position-cell ${warnings.length ? "has-warning" : ""} ${exceptions.length ? "has-exception" : ""}"><button class="planning-position-assignment ${employee ? "assigned" : "empty"} ${warnings.length ? "warning" : ""} ${exceptions.length ? "exception" : ""} ${!employee && position?.sector === "Pisos" ? "critical-empty" : ""} ${!employee && isOptionalPlanningPosition(position) ? "optional-empty" : ""}" type="button" ${editable && position ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"} aria-label="${employee ? `Cambiar asignación de ${position.label}: ${employee.name}` : `Asignar empleado a ${position?.label || row.label}`}">${employee ? `<strong>${employee.name}</strong><small>${employee.role}</small>${specialChip}` : emptyState}${positionExceptionSummary(exceptions)}${warnings.length ? `<em>${warnings[0]}</em>` : ""}</button></div>`;
-      }).join("")}`).join("")}
+    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">${section.icon}</span><div><span class="reference-sector-eyebrow">${section.eyebrow}</span><h2 id="planning-${section.key}-title">${section.sector}</h2>${section.description ? `<p>${section.description}</p>` : ""}</div></header>
+    <div class="planning-position-board"><div class="planning-position-grid" style="--morning-rows:${rowsByShift["Mañana"].length};--afternoon-rows:${rowsByShift["Tarde"].length}">
+      <div class="planning-position-corner"><span class="sr-only">Puesto</span>${staffView ? "" : `<small>${week.assignments.length} asignados</small>`}</div>
+      ${dates.map((date, index) => `<div class="planning-position-day ${index === dates.length - 1 ? "is-last-day" : ""}"><span>${dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
+      ${shifts.map((shift) => `<div class="planning-shift-divider planning-shift-divider--${shift.modifier}"><span aria-hidden="true">${shift.icon}</span><strong>${shift.label}</strong></div>${rowsByShift[shift.value].map(rowMarkup).join("")}`).join("")}
     </div></div>
   </section>`;
 }
@@ -946,6 +1001,24 @@ function deletePlanningWeek() {
   toast("Grilla eliminada");
 }
 
+function deleteSelectedPlanningWeeks() {
+  if (!canEditSchedule(user.role)) return;
+  const selectedWeeks = planningSnapshots().filter((week) => selectedPlanningWeekIds.has(week.id));
+  if (!selectedWeeks.length) return toast("Seleccioná al menos una grilla.", "error");
+  const confirmation = selectedWeeks.length === 1
+    ? `¿Eliminar "${selectedWeeks[0].name}"? Se quitará del historial almacenado.`
+    : `¿Eliminar ${selectedWeeks.length} grillas seleccionadas? Se quitarán del historial almacenado.`;
+  if (!confirm(confirmation)) return;
+  const selectedIds = new Set(selectedWeeks.map((week) => week.id));
+  state.weeklySchedules = (state.weeklySchedules || []).filter((week) => !selectedIds.has(week.id));
+  if (state.planningWeek && selectedIds.has(state.planningWeek.id)) state.planningWeek = null;
+  selectedWeeks.forEach((week) => audit("Eliminó una grilla semanal", week.name, "Eliminada"));
+  selectedPlanningWeekIds.clear();
+  planningView = "library";
+  persist();
+  toast(selectedWeeks.length === 1 ? "Grilla eliminada" : `${selectedWeeks.length} grillas eliminadas`);
+}
+
 function referenceSchedulePage() {
   const reference = state.referenceSchedule;
   const kitchenRows = [
@@ -1003,10 +1076,12 @@ function employeesPage() {
       .filter(Boolean)
       .some((value) => value.toLowerCase().includes(query));
   });
-  const action = canManage ? `<div class="heading-actions"><button class="button primary" data-action="new-user">${icons.plus} Usuario</button></div>` : "";
-  return `${pageHeading("EQUIPO", "Usuarios", `${state.users.length} usuarios con acceso · ${state.employees.length} personas registradas.`, action)}
-    <section class="toolbar"><label class="search">⌕<input id="employee-search" placeholder="Buscar por usuario, persona, rol, sector o turno…" value="${employeeSearch}" /></label><div class="filter-summary"><span class="status-dot"></span>${rows.length} resultados</div></section>
-    ${usersAdminPanel(canManage, rows)}`;
+  const withAccess = state.users.filter((item) => item.employeeId).length;
+  return `<section class="people-page">
+    <header class="people-page-header"><div><span class="eyebrow">DOTACIÓN</span><h1>Personal</h1><p>Directorio operativo, accesos y ubicación del equipo.</p></div><div class="people-page-actions"><span class="people-access-summary"><b>${withAccess}</b> accesos activos</span>${canManage ? `<button class="button primary" data-action="new-user"><span aria-hidden="true">+</span> Agregar persona</button>` : ""}</div></header>
+    <section class="people-toolbar"><label class="search"><span aria-hidden="true">⌕</span><input id="employee-search" placeholder="Buscar por nombre, rol, sector o turno…" value="${employeeSearch}" /></label><span class="people-result-count"><i></i>${rows.length} de ${state.employees.length} personas</span></section>
+    ${usersAdminPanel(canManage, rows)}
+  </section>`;
 }
 
 function userRows() {
@@ -1024,10 +1099,10 @@ function userRows() {
 }
 
 function usersAdminPanel(canManage, rows = userRows()) {
-  return `<section class="table-card"><table><thead><tr><th>Usuario</th><th>Persona</th><th>Rol empresa</th><th>Ubicación</th><th>Rol sistema</th><th>Gestión</th></tr></thead><tbody>${rows.map(({ user: rowUser, employee }) => {
+  return `<section class="people-table-panel"><div class="people-table-label"><div><strong>Directorio del equipo</strong><small>Gestioná los perfiles y accesos desde cada registro.</small></div><span>${rows.length} registros</span></div><div class="people-table-scroll"><table class="people-table"><thead><tr><th>Usuario</th><th>Persona</th><th>Rol empresa</th><th>Ubicación</th><th>Rol sistema</th><th>Gestión</th></tr></thead><tbody>${rows.map(({ user: rowUser, employee }) => {
       const rowId = rowUser?.id || employee?.id || "";
       return `<tr><td>${rowUser ? `<strong>${escapeHtml(rowUser.username)}</strong>` : `<span class="muted">Sin usuario</span>`}</td><td><div class="person-cell"><span class="avatar">${escapeHtml(employee?.initials || initials(rowUser?.name || rowUser?.username || "?"))}</span><div><strong>${escapeHtml(employee?.name || rowUser?.name || "Sin persona")}</strong><small>${escapeHtml(employee?.phone || "Sin teléfono")}</small></div></div></td><td>${escapeHtml(employee?.role || "Sin rol laboral")}</td><td>${employeeAssignment(employee || {})}</td><td>${rowUser ? escapeHtml(roleLabel[rowUser.role] || rowUser.role) : `<span class="muted">Sin acceso</span>`}</td><td>${canManage ? `<div class="row-actions">${rowUser ? `<button class="row-action" data-action="edit-user" data-id="${rowId}">Editar</button><button class="row-action danger" data-action="delete-user" data-id="${rowId}">Eliminar</button>` : `<button class="row-action" data-action="create-user-for-employee" data-id="${rowId}">Crear acceso</button>`}</div>` : `<span class="muted">Solo lectura</span>`}</td></tr>`;
-    }).join("")}</tbody></table>${rows.length ? "" : empty("No encontramos usuarios con esa búsqueda")}</section>`;
+    }).join("")}</tbody></table>${rows.length ? "" : empty("No encontramos usuarios con esa búsqueda")}</div></section>`;
 }
 
 function employeeAssignment(employee) {
@@ -1077,8 +1152,8 @@ function auditPage() {
     <button class="reset-link" data-action="reset-demo">Restablecer datos iniciales</button>`;
 }
 
-function modal(content) {
-  document.body.insertAdjacentHTML("beforeend", `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true">${content}</section></div>`);
+function modal(content, variant = "") {
+  document.body.insertAdjacentHTML("beforeend", `<div class="modal-backdrop ${variant ? `${variant}-backdrop` : ""}" data-action="close-modal"><section class="modal ${variant}" role="dialog" aria-modal="true">${content}</section></div>`);
 }
 
 function exportStateJson() {
@@ -1231,7 +1306,7 @@ function userModal(targetUser = null, linkedEmployee = null) {
   const employee = targetUser ? state.employees.find((item) => item.id === targetUser.employeeId) : linkedEmployee;
   const isEditing = Boolean(targetUser);
   const username = targetUser?.username || (employee ? slugify(employee.name).split("-")[0] : "");
-  const password = targetUser?.password || "demo123";
+  const password = "";
   const name = employee?.name || targetUser?.name || "";
   const companyRole = employee?.role || companyRoleOptions[0];
   const systemRole = targetUser?.role || "staff";
@@ -1239,7 +1314,7 @@ function userModal(targetUser = null, linkedEmployee = null) {
   const turno = employee?.turno || "";
   const piso = employee?.piso || "";
   const phone = employee?.phone || "";
-  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">${isEditing ? "EDITAR USUARIO" : "NUEVO USUARIO"}</span><h2>${isEditing ? "Editar usuario" : "Agregar usuario"}</h2><p class="muted">${isEditing ? "Los cambios se guardan en la base JSON y actualizan el acceso y los datos laborales." : "Se crea el acceso a la app con sus datos laborales en una sola operación."}</p><form id="user-form"><input type="hidden" name="userId" value="${escapeHtml(targetUser?.id || "")}" /><input type="hidden" name="employeeId" value="${escapeHtml(employee?.id || "")}" /><div class="form-row"><label>Usuario<input name="username" autocomplete="off" value="${escapeHtml(username)}" required /></label><label>Contraseña<input name="password" type="password" value="${escapeHtml(password)}" required /></label></div><label>Nombre completo<input name="name" value="${escapeHtml(name)}" required /></label><div class="form-row"><label>Rol del sistema<select name="systemRole" required>${systemRoleSelectOptions(systemRole)}</select></label><label>Rol dentro de la empresa<select name="companyRole" required>${companyRoleSelectOptions(companyRole)}</select></label></div><div class="form-row"><label>Sector<select name="sector">${sectorSelectOptions(sector)}</select></label><label>Turno<select name="turno">${shiftSelectOptions(turno)}</select></label></div><div class="form-row"><label>Piso<select name="piso">${floorSelectOptions(piso)}</select></label><label>Teléfono<input name="phone" value="${escapeHtml(phone)}" /></label></div><div class="week-form-note"><strong>Roles separados</strong><p>El rol del sistema define permisos. El rol dentro de la empresa define la función laboral y cómo aparece en grilla.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${isEditing ? "Guardar cambios" : "Guardar usuario"}</button></div></form>`);
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">${isEditing ? "EDITAR USUARIO" : "NUEVO USUARIO"}</span><h2>${isEditing ? "Editar usuario" : "Agregar usuario"}</h2><p class="muted">${isEditing ? "Los cambios actualizan datos laborales. Dejá la contraseña vacía para conservarla." : "Se crea el acceso a la app con sus datos laborales en una sola operación."}</p><form id="user-form"><input type="hidden" name="userId" value="${escapeHtml(targetUser?.id || "")}" /><input type="hidden" name="employeeId" value="${escapeHtml(employee?.id || "")}" /><div class="form-row"><label>Usuario<input name="username" autocomplete="off" value="${escapeHtml(username)}" required /></label><label>Contraseña<input name="password" type="password" value="${escapeHtml(password)}" ${isEditing ? 'placeholder="Sin cambios"' : "required"} /></label></div><label>Nombre completo<input name="name" value="${escapeHtml(name)}" required /></label><div class="form-row"><label>Rol del sistema<select name="systemRole" required>${systemRoleSelectOptions(systemRole)}</select></label><label>Rol dentro de la empresa<select name="companyRole" required>${companyRoleSelectOptions(companyRole)}</select></label></div><div class="form-row"><label>Sector<select name="sector">${sectorSelectOptions(sector)}</select></label><label>Turno<select name="turno">${shiftSelectOptions(turno)}</select></label></div><div class="form-row"><label>Piso<select name="piso">${floorSelectOptions(piso)}</select></label><label>Teléfono<input name="phone" value="${escapeHtml(phone)}" /></label></div><div class="week-form-note"><strong>Roles separados</strong><p>El rol del sistema define permisos. El rol dentro de la empresa define la función laboral y cómo aparece en grilla.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${isEditing ? "Guardar cambios" : "Guardar usuario"}</button></div></form>`);
 }
 
 function newPlanningWeekModal() {
@@ -1253,7 +1328,7 @@ function assignmentModal(positionId) {
   if (!position) return;
   const assignment = week.assignments.find((item) => item.positionId === positionId);
   const availableEmployees = state.employees.filter((employee) => employee.status === "active" && employee.participaEnOperacion !== false);
-  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">ASIGNACIÓN MANUAL</span><h2>${position.label}</h2><p class="muted">${formatIsoDate(position.date)} · Turno ${position.shift} · ${position.sector}</p><form id="position-assignment-form"><input type="hidden" name="positionId" value="${position.id}" /><label>Empleado<select name="employeeId" required><option value="">Seleccionar empleado</option>${availableEmployees.map((employee) => `<option value="${employee.id}" ${assignment?.employeeId === employee.id ? "selected" : ""}>${employee.name} · ${employee.role}</option>`).join("")}</select></label><div class="week-form-note"><strong>Asignación manual</strong><p>No se permite repetir la misma persona dentro del mismo día.</p></div><div class="modal-actions">${assignment ? `<button type="button" class="button danger-soft" data-action="remove-planning-assignment" data-position-id="${position.id}">Quitar asignación</button>` : ""}<button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${assignment ? "Cambiar empleado" : "Asignar empleado"}</button></div></form>`);
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">ASIGNACIÓN MANUAL</span><h2>${position.label}</h2><p class="muted">${formatIsoDate(position.date)} · Turno ${position.shift} · ${position.sector}</p><form id="position-assignment-form"><input type="hidden" name="positionId" value="${position.id}" /><label>Empleado<select name="employeeId" required><option value="">Seleccionar empleado</option>${availableEmployees.map((employee) => `<option value="${employee.id}" ${assignment?.employeeId === employee.id ? "selected" : ""}>${employee.name} · ${employee.role}</option>`).join("")}</select></label><div class="week-form-note"><strong>Asignación manual</strong><p>La lista muestra el equipo activo. La aplicación bloquea dobles asignaciones en el mismo día.</p></div><div class="modal-actions">${assignment ? `<button type="button" class="button danger-soft" data-action="remove-planning-assignment" data-position-id="${position.id}">Quitar asignación</button>` : ""}<button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${assignment ? "Cambiar empleado" : "Asignar empleado"}</button></div></form>`, "assignment-drawer");
 }
 
 function dayOffModal({ sector, date }) {
@@ -1382,7 +1457,7 @@ function hasSameDayAssignment(week, position, employeeId) {
 function unreadCount() { return state.notifications.filter((n) => !n.read).length; }
 function empty(message) { return `<div class="empty-state"><span>◇</span><p>${message}</p></div>`; }
 
-function loginAsDemoUser(match) {
+async function loginAsDemoUser(match) {
   user = match;
   sessionStorage.setItem(SESSION_KEY, JSON.stringify(user));
   sessionStorage.removeItem("uzumaki-user-v3");
@@ -1390,17 +1465,21 @@ function loginAsDemoUser(match) {
   sessionStorage.removeItem("uzumaki-user");
   sessionStorage.removeItem("turnia-user");
   page = "dashboard";
+  state = await loadState();
   render();
 }
 
-document.addEventListener("submit", (event) => {
+document.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (event.target.id === "login-form") {
     const data = new FormData(event.target);
     const username = data.get("username").trim().toLowerCase();
-    const match = state.users.find((u) => u.username === username && u.password === data.get("password"));
-    if (!match) return renderLogin("Usuario o contraseña incorrectos.");
-    return loginAsDemoUser(match);
+    try {
+      const match = await authenticate(username, data.get("password"));
+      return loginAsDemoUser(match);
+    } catch (error) {
+      return renderLogin(error.message || "Usuario o contraseña incorrectos.");
+    }
   }
   if (event.target.id === "request-form") {
     const data = new FormData(event.target);
@@ -1571,7 +1650,7 @@ document.addEventListener("submit", (event) => {
     const sector = data.get("sector");
     const turno = data.get("turno");
     const participaEnOperacion = operationalCompanyRoles.includes(companyRole);
-    if (!username || !password || !name || !role || !companyRole) return toast("Completá usuario, contraseña, nombre y roles.", "error");
+    if (!username || (!userId && !password) || !name || !role || !companyRole) return toast("Completá usuario, contraseña, nombre y roles.", "error");
     if (state.users.some((item) => item.username === username && item.id !== userId)) return toast("Ese usuario ya existe.", "error");
     const existingUser = userId ? state.users.find((item) => item.id === userId) : null;
     let employee = employeeId ? state.employees.find((item) => item.id === employeeId) : null;
@@ -1606,11 +1685,11 @@ document.addEventListener("submit", (event) => {
     };
     Object.assign(savedUser, {
       username,
-      password,
       name,
       role,
       employeeId: employee.id,
     });
+    if (password) savedUser.password = password;
     if (!existingUser) state.users.push(savedUser);
     if (userId && (savedUser.id === user.id || savedUser.username === user.username)) {
       user = savedUser;
@@ -1636,6 +1715,13 @@ document.addEventListener("input", (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target.name === "planning-week-selection") {
+    if (!canEditSchedule(user.role)) return;
+    if (event.target.checked) selectedPlanningWeekIds.add(event.target.value);
+    else selectedPlanningWeekIds.delete(event.target.value);
+    render();
+    return;
+  }
   if (event.target.name === "startDate" && event.target.closest("#planning-week-form")) {
     const endDateInput = event.target.form.querySelector('input[name="endDate"]');
     endDateInput.value = event.target.value ? addIsoDays(event.target.value, 6) : "";
@@ -1655,17 +1741,19 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("click", (event) => {
+  const sidebarToggle = event.target.closest('[data-action="toggle-sidebar"]');
+  if (sidebarToggle) {
+    sidebarCollapsed = !sidebarCollapsed;
+    sessionStorage.setItem("uzumaki-sidebar-collapsed", String(sidebarCollapsed));
+    render();
+    return;
+  }
   const pageButton = event.target.closest("[data-page]");
   if (pageButton) { page = pageButton.dataset.page; if (page === "schedule" && canEditSchedule(user.role)) planningView = "library"; document.querySelector("#sidebar")?.classList.remove("open"); render(); return; }
   const button = event.target.closest("[data-action]"); if (!button) return;
   const action = button.dataset.action;
   if (action === "toggle-password") { const input = document.querySelector('input[name="password"]'); input.type = input.type === "password" ? "text" : "password"; button.textContent = input.type === "password" ? "Ver" : "Ocultar"; }
-  if (action === "demo-login") {
-    const match = state.users.find((item) => item.username === button.dataset.username);
-    if (!match) return renderLogin("Usuario no disponible.");
-    loginAsDemoUser(match);
-  }
-  if (action === "logout") { user = null; sessionStorage.removeItem(SESSION_KEY); sessionStorage.removeItem("uzumaki-user-v3"); sessionStorage.removeItem("uzumaki-user-v2"); sessionStorage.removeItem("uzumaki-user"); sessionStorage.removeItem("turnia-user"); render(); }
+  if (action === "logout") { endSession(); user = null; sessionStorage.removeItem(SESSION_KEY); sessionStorage.removeItem("uzumaki-user-v4"); sessionStorage.removeItem("uzumaki-user-v3"); sessionStorage.removeItem("uzumaki-user-v2"); sessionStorage.removeItem("uzumaki-user"); sessionStorage.removeItem("turnia-user"); render(); }
   if (action === "menu") document.querySelector("#sidebar")?.classList.toggle("open");
   if (action === "export-state-json") exportStateJson();
   if (action === "import-state-json") importStateJson();
@@ -1680,8 +1768,11 @@ document.addEventListener("click", (event) => {
   if (action === "create-user-for-employee") createUserForEmployeeModal(button.dataset.id);
   if (action === "new-planning-week" && canEditSchedule(user.role)) newPlanningWeekModal();
   if (action === "open-planning-library") { planningView = "library"; render(); }
+  if (action === "select-planning-date") { planningDateIndex = Number(button.dataset.dateIndex) || 0; render(); }
   if (action === "open-current-planning") { planningView = "editor"; render(); }
   if (action === "open-stored-planning") openStoredPlanningWeek(button.dataset.weekId);
+  if (action === "clear-planning-week-selection") { selectedPlanningWeekIds.clear(); render(); }
+  if (action === "delete-selected-planning-weeks") deleteSelectedPlanningWeeks();
   if (action === "assign-planning-position") assignmentModal(button.dataset.positionId);
   if (action === "add-planning-day-off") dayOffModal({ sector: button.dataset.sector, date: button.dataset.date });
   if (action === "new-week-exception") weekExceptionModal();

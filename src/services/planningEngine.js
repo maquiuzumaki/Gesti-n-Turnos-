@@ -25,7 +25,7 @@ const FRANQUERA_PRIORITY_ANCHOR_PATTERN = {
 const FRANQUERA_PRIORITY_ALTERNATION_PERIOD_WEEKS = 1;
 const GUSTAVO_EMPLOYEE_ID = "emp-cocinero-manana-1";
 const JULIO_EMPLOYEE_ID = "emp-cocinero-julio";
-const GUSTAVO_MORNING_TEMPLATE_ID = "kitchen-cook-morning-1";
+const GUSTAVO_MORNING_TEMPLATE_ID = "kitchen-cook-morning-2";
 const JULIO_AFTERNOON_TEMPLATE_ID = "kitchen-cook-afternoon";
 
 function isoDayNumber(value) {

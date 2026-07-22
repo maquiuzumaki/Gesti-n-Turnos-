@@ -121,7 +121,7 @@ export const employees = [
     systemRole: "Personal",
     participaEnOperacion: true,
     francoCycle: { anchorDate: "2026-06-06", anchorType: "F1", cycleLengthDays: 15 },
-    habitualPositionTemplateId: "kitchen-cook-morning-1",
+    habitualPositionTemplateId: "kitchen-cook-morning-2",
     francos: [],
   },
   {
@@ -140,7 +140,7 @@ export const employees = [
     systemRole: "Personal",
     participaEnOperacion: true,
     francoCycle: { anchorDate: "2026-06-02", anchorType: "F2", cycleLengthDays: 15 },
-    habitualPositionTemplateId: "kitchen-cook-morning-2",
+    habitualPositionTemplateId: "kitchen-cook-morning-1",
     francos: [],
   },
   {
@@ -724,14 +724,13 @@ export const initialNotifications = notifications;
 export const initialAudit = auditLogs;
 
 // ============================================================================
-// USUARIOS DE DEMOSTRACIÓN
+// IDENTIDADES SEMILLA PARA VINCULAR EMPLEADOS
 // ============================================================================
 
 export const demoUsers = [
   {
     id: "user-maqui",
     username: "maqui",
-    password: "demo123",
     name: "Maqui Uzumaki",
     role: "manager",
     employeeId: "emp-encargada-tarde",
@@ -739,7 +738,6 @@ export const demoUsers = [
   {
     id: "user-encargada-manana",
     username: "encargada-manana",
-    password: "demo123",
     name: "Encargada Nutricionista Mañana",
     role: "manager",
     employeeId: "emp-encargada-manana",
@@ -747,7 +745,6 @@ export const demoUsers = [
   {
     id: "user-supervisora",
     username: "supervisora",
-    password: "demo123",
     name: "Supervisión",
     role: "supervisor",
     employeeId: "emp-supervisora-general",
@@ -755,7 +752,6 @@ export const demoUsers = [
   {
     id: "user-debora",
     username: "debora",
-    password: "demo123",
     name: "Débora",
     role: "staff",
     employeeId: "emp-franquera-debora",
@@ -763,7 +759,6 @@ export const demoUsers = [
   {
     id: "user-lucila",
     username: "lucila",
-    password: "demo123",
     name: "Lucila",
     role: "staff",
     employeeId: "emp-franquera-lucila",

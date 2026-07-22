@@ -16,10 +16,10 @@ import {
   sectores,
   turnos,
   weeklySchedules,
-} from "../data/mockData.js?v=20260706-3";
+} from "../data/mockData.js?v=20260717-2";
 
-const KEY = "uzumaki-mvp-state-v4";
-const LEGACY_KEYS = ["uzumaki-mvp-state-v3", "uzumaki-mvp-state-v2", "uzumaki-mvp-state-v1", "turnia-mvp-state-v1"];
+const KEY = "uzumaki-mvp-state-v5";
+const LEGACY_KEYS = ["uzumaki-mvp-state-v4", "uzumaki-mvp-state-v3", "uzumaki-mvp-state-v2", "uzumaki-mvp-state-v1", "turnia-mvp-state-v1"];
 const API_STATE_URL = "/api/state";
 let saveQueue = Promise.resolve();
 export const STATE_FILE_NAME = "uzumaki-db.json";
@@ -165,30 +165,56 @@ const normalizeState = (parsed) => {
   };
 };
 
-async function loadStateFromApi() {
-  if (!window.location.protocol.startsWith("http")) return null;
-  const response = await fetch(API_STATE_URL, { cache: "no-store" });
-  if (response.status === 404) return null;
-  if (!response.ok) throw new Error("No se pudo cargar la base JSON.");
-  return normalizeState(await response.json());
+const removeCredentials = (state) => {
+  (state.users || []).forEach((item) => {
+    delete item.password;
+    delete item.passwordHash;
+  });
+  return state;
+};
+
+export async function authenticate(username, password) {
+  if (!canPersistStateFile()) throw new Error("Abrí la app desde server.py para iniciar sesión.");
+  const response = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.message || "No se pudo iniciar sesión.");
+  return result.user;
 }
 
-export async function loadState() {
+export async function endSession() {
+  if (canPersistStateFile()) await fetch("/api/auth/logout", { method: "POST" });
+}
+
+async function loadStateFromApi(options = {}) {
+  if (!options.remote || !window.location.protocol.startsWith("http")) return null;
+  const response = await fetch(API_STATE_URL, { cache: "no-store" });
+  if (response.status === 404) return null;
+  if (response.status === 401) {
+    const error = new Error("La sesión venció. Volvé a iniciar sesión.");
+    error.code = "authenticationRequired";
+    throw error;
+  }
+  if (!response.ok) throw new Error("No se pudo cargar la base JSON.");
+  return removeCredentials(normalizeState(await response.json()));
+}
+
+export async function loadState(options = { remote: true }) {
   try {
-    const apiState = await loadStateFromApi();
+    const apiState = await loadStateFromApi(options);
     if (apiState) {
       localStorage.setItem(KEY, JSON.stringify(apiState));
-      return apiState;
+      return removeCredentials(apiState);
     }
     const saved = localStorage.getItem(KEY);
-    if (!saved) {
-      const initialState = freshState();
-      await saveState(initialState);
-      return initialState;
-    }
+    if (!saved) return freshState();
     const parsed = JSON.parse(saved);
     return normalizeState(parsed);
   } catch {
+    if (options.requireAuth) throw new Error("La sesión venció. Volvé a iniciar sesión.");
     try {
       const saved = localStorage.getItem(KEY);
       return saved ? normalizeState(JSON.parse(saved)) : freshState();
@@ -204,6 +230,7 @@ async function persistState(state, options = {}) {
   state.employees = Array.isArray(state.employees) ? state.employees.map(normalizeEmployee) : freshState().employees;
   delete state.demoUsers;
   if (!canPersistStateFile()) {
+    removeCredentials(state);
     localStorage.setItem(KEY, JSON.stringify(state));
     if (options.requireFile) {
       throw new Error(`Para guardar en ${STATE_FILE_NAME}, abrí la app desde server.py y no como archivo local.`);
@@ -227,10 +254,12 @@ async function persistState(state, options = {}) {
     const result = await response.json();
     state.stateRevision = result.stateRevision;
     state.stateUpdatedAt = result.stateUpdatedAt;
+    removeCredentials(state);
     localStorage.setItem(KEY, JSON.stringify(state));
     return { local: true, file: true, stateRevision: result.stateRevision };
   } catch (error) {
     if (error.code === "stateConflict" || options.requireFile) throw error;
+    removeCredentials(state);
     localStorage.setItem(KEY, JSON.stringify(state));
     return { local: true, file: false, error };
   }
