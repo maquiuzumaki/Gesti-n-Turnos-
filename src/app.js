@@ -642,7 +642,7 @@ function staffPublishedPlanningWeekPage(week) {
 
 function planningWeekStructure(week, conflicts, showExceptions = true, providedDaysOffSummary = null, simpleGridView = false) {
   const staffView = simpleGridView || !isAdminRole(user.role);
-  const showDayOffTables = showExceptions || canEditSchedule(user.role);
+  const showDayOffTables = staffView || showExceptions || canEditSchedule(user.role);
   const daysOffSummary = providedDaysOffSummary || buildDailyDaysOffSummary({
     employees: state.employees,
     week,
