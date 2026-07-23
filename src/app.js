@@ -166,8 +166,8 @@ function renderPage() {
   return (pages[page] || dashboardPage)();
 }
 
-function pageHeading(kicker, title, description, action = "") {
-  return `<div class="page-heading"><div><span class="eyebrow">${escapeHtml(kicker)}</span><h1>${escapeHtml(title)}</h1>${description ? `<p>${escapeHtml(description)}</p>` : ""}</div>${action}</div>`;
+function pageHeading(kicker, title, description, action = "", extraClass = "") {
+  return `<div class="page-heading ${extraClass}"><div><span class="eyebrow">${escapeHtml(kicker)}</span><h1>${escapeHtml(title)}</h1>${description ? `<p>${escapeHtml(description)}</p>` : ""}</div>${action}</div>`;
 }
 
 function dashboardPage() {
@@ -221,7 +221,7 @@ function staffDashboard() {
     return `${pageHeading("MI PERFIL", "Información operativa", "Tu usuario no está vinculado a un empleado operativo.")}
       <section class="panel">${empty("No encontramos información operativa para este usuario")}</section>`;
   }
-  return `${pageHeading("MI PERFIL", `Hola, ${employee.name}`, "", `<button class="button secondary" data-page="schedule">Ver grilla publicada</button>`)}
+  return `${pageHeading("MI PERFIL", `Hola, ${employee.name}`, "", `<button class="button secondary" data-page="schedule">Ver grilla publicada</button>`, "staff-profile-heading")}
     <section class="staff-profile-hero">
       <div class="staff-profile-avatar">${employee.initials}</div>
       <div><span class="eyebrow light">PERSONAL OPERATIVO</span><h2>${employee.name}</h2><p>${employee.role} · ${employee.sector || "Sin sector"} · ${employee.turno || "Turno flexible"}</p></div>
