@@ -221,7 +221,7 @@ function staffDashboard() {
     return `${pageHeading("MI PERFIL", "Información operativa", "Tu usuario no está vinculado a un empleado operativo.")}
       <section class="panel">${empty("No encontramos información operativa para este usuario")}</section>`;
   }
-  return `${pageHeading("MI PERFIL", `Hola, ${employee.name}`, "Esta es tu información operativa visible en Uzumaki.", `<button class="button secondary" data-page="schedule">Ver grilla publicada</button>`)}
+  return `${pageHeading("MI PERFIL", `Hola, ${employee.name}`, "", `<button class="button secondary" data-page="schedule">Ver grilla publicada</button>`)}
     <section class="staff-profile-hero">
       <div class="staff-profile-avatar">${employee.initials}</div>
       <div><span class="eyebrow light">PERSONAL OPERATIVO</span><h2>${employee.name}</h2><p>${employee.role} · ${employee.sector || "Sin sector"} · ${employee.turno || "Turno flexible"}</p></div>
