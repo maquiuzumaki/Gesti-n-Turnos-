@@ -466,3 +466,47 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
   .planning-day-off-chip strong { font-size: 7px; line-height: 1; white-space: normal; }
   .planning-day-off-chip small { width: fit-content; padding: 1px 3px; font-size: 7px; line-height: 1; }
 }
+
+@media (orientation: landscape) and (max-height: 520px) and (max-width: 960px) {
+  .app-shell { display: block; }
+  .workspace { grid-column: auto; }
+  .sidebar { transform: translateX(-105%); transition: transform .2s ease; box-shadow: 15px 0 45px rgba(0,0,0,.15); }
+  .sidebar.open { transform: translateX(0); }
+  .mobile-menu { display: block; }
+  .topbar { height: 54px; padding: 0 14px; }
+  .topbar > div:first-of-type, .date-pill { display: none; }
+  .content { width: 100%; padding: 14px 12px 24px; }
+  .planning-compact-heading { grid-template-columns: auto minmax(0, 1fr); gap: 8px; margin-bottom: 12px; padding: 8px; }
+  .planning-compact-title h1 { font-size: 16px; }
+  .planning-compact-actions { grid-column: 1 / -1; width: 100%; flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; padding-bottom: 2px; }
+  .planning-compact-actions .button { flex: 0 0 auto; min-height: 32px; }
+  .planning-conflict-panel, .weekly-exceptions-panel { margin: 0 0 12px; }
+  .planning-position-sectors { gap: 14px; margin: 0; }
+  .planning-position-board { overflow-x: hidden; }
+  .planning-position-grid { width: 100%; min-width: 0; grid-template-columns: 72px repeat(7, minmax(0, 1fr)); grid-template-rows: 38px 26px repeat(var(--morning-rows), 46px) 26px repeat(var(--afternoon-rows), 46px); }
+  .planning-days-off-grid { grid-template-rows: 38px 48px; }
+  .planning-position-corner, .planning-position-day { min-height: 38px; padding: 4px 2px; }
+  .planning-position-row-label { padding: 5px 5px; }
+  .planning-position-grid:not(.planning-days-off-grid) .planning-position-corner > strong,
+  .planning-position-grid:not(.planning-days-off-grid) .planning-position-row-label > strong { font-size: 10px; line-height: 1.05; }
+  .planning-position-grid:not(.planning-days-off-grid) .planning-position-day > span { font-size: 9px; }
+  .planning-position-day strong, .planning-position-row-label small { font-size: 8px; line-height: 1.05; }
+  .planning-shift-divider { min-height: 26px; padding: 0 8px; font-size: 10px; letter-spacing: .04em; }
+  .planning-shift-divider > span { width: 18px; height: 18px; border-radius: 4px; font-size: 12px; }
+  .planning-position-grid > .planning-position-cell { padding: 2px; }
+  .planning-position-assignment { min-height: 0; padding: 3px 2px; border-radius: 5px; }
+  .planning-position-assignment small,
+  .planning-assignment-name--full,
+  .planning-exception-chip,
+  .planning-position-assignment em { display: none !important; }
+  .planning-assignment-name--compact { display: block !important; }
+  .planning-position-assignment.assigned strong { font-size: 9px; line-height: 1.05; white-space: normal; }
+  .planning-empty-state { padding: 0; font-size: 8px; line-height: 1; }
+  .planning-position-sector .reference-sector-head { min-height: 48px; padding: 8px 10px; }
+  .planning-position-sector .reference-sector-icon { width: 28px; height: 28px; flex-basis: 28px; font-size: 13px; }
+  .planning-position-sector .reference-sector-head h2 { font-size: 15px; }
+  .planning-day-off-button { min-height: 0; gap: 2px; padding: 3px 2px; border-radius: 5px; }
+  .planning-day-off-chip { grid-template-columns: 1fr; gap: 1px; padding: 2px 3px; border-radius: 4px; }
+  .planning-day-off-chip strong { font-size: 8px; line-height: 1; white-space: normal; }
+  .planning-day-off-chip small { width: fit-content; padding: 1px 3px; font-size: 7px; line-height: 1; }
+}
