@@ -1,6 +1,6 @@
 {
-  "stateRevision": 31,
-  "stateUpdatedAt": "2026-07-19T00:29:34.065255Z",
+  "stateRevision": 32,
+  "stateUpdatedAt": "2026-07-23T20:27:24.610258Z",
   "employees": [
     {
       "id": "emp-cocinero-manana-1",
@@ -257,7 +257,7 @@
     },
     {
       "id": "emp-franquera-debora",
-      "name": "Débora",
+      "name": "Debora",
       "initials": "DE",
       "role": "Personal franquero",
       "roleId": "rol-franquera",
@@ -2102,8 +2102,36 @@
       "pausedBy": null
     }
   ],
-  "requests": [],
+  "requests": [
+    {
+      "id": "SOL-025",
+      "employee": "Lucila",
+      "employeeId": "emp-franquera-lucila",
+      "type": "leave",
+      "detail": "09/07/2026 · Mañana",
+      "date": "Ahora",
+      "status": "pendingManager",
+      "note": "nvghjvc",
+      "requiresPartner": false,
+      "partnerEmployeeId": "",
+      "partnerStatus": "",
+      "scheduleImpact": {
+        "target": {
+          "date": "2026-07-09",
+          "shift": "Mañana"
+        }
+      }
+    }
+  ],
   "notifications": [
+    {
+      "id": "55b34e49-db6b-4ffc-bd46-24e7e3ca2f88",
+      "title": "Solicitud enviada",
+      "text": "Licencia: 09/07/2026 · Mañana.",
+      "time": "Ahora",
+      "type": "request",
+      "read": false
+    },
     {
       "id": "6e5c88d8-d61c-41d3-9a9e-0e91b9031ff0",
       "title": "Nueva grilla publicada",
@@ -2114,6 +2142,14 @@
     }
   ],
   "auditLogs": [
+    {
+      "id": "ece1244d-af0b-4e72-b7ab-a03a042c48db",
+      "time": "Ahora",
+      "user": "Lucila",
+      "action": "Creó una solicitud",
+      "entity": "SOL-025",
+      "result": "Pendiente de encargada"
+    },
     {
       "id": "e50c1666-37aa-4b1d-b174-a97404ea8e99",
       "time": "Ahora",
@@ -3902,7 +3938,7 @@
           "tarde": {
             "1": {
               "employeeId": "emp-franquera-debora",
-              "name": "Débora",
+              "name": "Debora",
               "kind": "coverage",
               "note": "Cobertura"
             },
@@ -3966,7 +4002,7 @@
           "manana": {
             "1": {
               "employeeId": "emp-franquera-debora",
-              "name": "Débora",
+              "name": "Debora",
               "kind": "coverage",
               "note": "Cobertura"
             },
@@ -4032,7 +4068,7 @@
             },
             {
               "employeeId": "emp-franquera-debora",
-              "name": "Débora",
+              "name": "Debora",
               "kind": "collaboration",
               "note": "Cobertura en Cocina"
             }
@@ -4154,7 +4190,7 @@
             },
             "3": {
               "employeeId": "emp-franquera-debora",
-              "name": "Débora",
+              "name": "Debora",
               "kind": "coverage",
               "note": "Cobertura"
             }
@@ -4198,7 +4234,7 @@
             },
             {
               "employeeId": "emp-franquera-debora",
-              "name": "Débora",
+              "name": "Debora",
               "kind": "coverage",
               "note": "Cubriendo"
             }
@@ -4324,7 +4360,7 @@
           "pisos": [
             {
               "employeeId": "emp-franquera-debora",
-              "name": "Débora"
+              "name": "Debora"
             },
             {
               "employeeId": "emp-franquera-lucila",
@@ -4404,7 +4440,7 @@
           "pisos": [
             {
               "employeeId": "emp-franquera-debora",
-              "name": "Débora"
+              "name": "Debora"
             },
             {
               "employeeId": "emp-camarera-romina",
@@ -4530,7 +4566,7 @@
     {
       "id": "user-debora",
       "username": "debora",
-      "name": "Débora",
+      "name": "Debora",
       "role": "staff",
       "employeeId": "emp-franquera-debora",
       "passwordHash": "pbkdf2_sha256$310000$d33596490ae7fd71a500705383ec7a82$403fbf5366d2b3a636fc43b55883d2ae6ec560c8df8c0bcdfa72fc6b054cb813"

@@ -316,7 +316,7 @@ export const employees = [
   },
   {
     id: "emp-franquera-debora",
-    name: "Débora",
+    name: "Debora",
     initials: "DE",
     role: "Personal franquero",
     roleId: "rol-franquera",
@@ -472,7 +472,7 @@ export const referenceSchedule = {
           3: { employeeId: "emp-camarera-cintia", name: "Cintia" },
         },
         tarde: {
-          1: { employeeId: "emp-franquera-debora", name: "Débora", kind: "coverage", note: "Cobertura" },
+          1: { employeeId: "emp-franquera-debora", name: "Debora", kind: "coverage", note: "Cobertura" },
           2: { employeeId: "emp-camarera-romina", name: "Romina" },
           3: { employeeId: "emp-camarera-yesica", name: "Yesica" },
         },
@@ -504,7 +504,7 @@ export const referenceSchedule = {
       },
       pisos: {
         manana: {
-          1: { employeeId: "emp-franquera-debora", name: "Débora", kind: "coverage", note: "Cobertura" },
+          1: { employeeId: "emp-franquera-debora", name: "Debora", kind: "coverage", note: "Cobertura" },
           2: { employeeId: "emp-franquera-lucila", name: "Lucila", kind: "coverage", note: "Cobertura" },
           3: { employeeId: "emp-camarera-cintia", name: "Cintia" },
         },
@@ -533,7 +533,7 @@ export const referenceSchedule = {
         manana: [
           { employeeId: "emp-cocinero-manana-2", name: "Mario" },
           { employeeId: "emp-cocinero-manana-1", name: "Gustavo" },
-          { employeeId: "emp-franquera-debora", name: "Débora", kind: "collaboration", note: "Cobertura en Cocina" },
+          { employeeId: "emp-franquera-debora", name: "Debora", kind: "collaboration", note: "Cobertura en Cocina" },
         ],
         tarde: [
           { employeeId: "emp-cocinero-julio", name: "Julio" },
@@ -586,7 +586,7 @@ export const referenceSchedule = {
         tarde: {
           1: { employeeId: "emp-camarera-milagros", name: "Milagros" },
           2: { employeeId: "emp-camarera-romina", name: "Romina" },
-          3: { employeeId: "emp-franquera-debora", name: "Débora", kind: "coverage", note: "Cobertura" },
+          3: { employeeId: "emp-franquera-debora", name: "Debora", kind: "coverage", note: "Cobertura" },
         },
       },
       francos: {
@@ -610,7 +610,7 @@ export const referenceSchedule = {
         ],
         tarde: [
           { employeeId: "emp-cocinero-julio", name: "Julio" },
-          { employeeId: "emp-franquera-debora", name: "Débora", kind: "coverage", note: "Cubriendo" },
+          { employeeId: "emp-franquera-debora", name: "Debora", kind: "coverage", note: "Cubriendo" },
         ],
       },
       pisos: {
@@ -667,7 +667,7 @@ export const referenceSchedule = {
           { employeeId: "emp-cocinero-julio", name: "Julio" },
         ],
         pisos: [
-          { employeeId: "emp-franquera-debora", name: "Débora" },
+          { employeeId: "emp-franquera-debora", name: "Debora" },
           { employeeId: "emp-franquera-lucila", name: "Lucila" },
         ],
       },
@@ -704,7 +704,7 @@ export const referenceSchedule = {
           { employeeId: "emp-cocinero-julio", name: "Julio" },
         ],
         pisos: [
-          { employeeId: "emp-franquera-debora", name: "Débora" },
+          { employeeId: "emp-franquera-debora", name: "Debora" },
           { employeeId: "emp-camarera-romina", name: "Romina" },
         ],
       },
@@ -752,7 +752,7 @@ export const demoUsers = [
   {
     id: "user-debora",
     username: "debora",
-    name: "Débora",
+    name: "Debora",
     role: "staff",
     employeeId: "emp-franquera-debora",
   },

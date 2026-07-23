@@ -401,7 +401,11 @@ function canViewRequestDetail(request) {
 
 function requestMatchesFilter(request, filter) {
   if (filter === "all") return true;
-  if (filter === "active") return activeRequestStatuses.includes(request.status);
+  if (filter === "active") return ["pending", "pendingManager", "review"].includes(request.status) || request.status === "partnerAccepted";
+  if (filter === "waitingResponse") return request.status === "pendingPartner";
+  if (filter === "approved") return request.status === "approved";
+  if (filter === "rejected") return ["rejected", "partnerRejected"].includes(request.status);
+  if (filter === "history") return ["approved", "rejected", "partnerRejected", "revoked"].includes(request.status);
   return request.status === filter;
 }
 
@@ -619,7 +623,7 @@ function planningLaneSlot(week, position, conflicts) {
 function planningLaneDaysOff(week, sector, date, daysOffSummary, conflicts) {
   const dayOffs = daysOffSummary?.[sector]?.[date] || [];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
-  return `<section class="planning-lane planning-lane-off"><header><div class="planning-lane-title"><span>○</span><div><h3>Francos · ${sector}</h3><small>${dayOffs.length ? `${dayOffs.length} personas disponibles` : "Sin francos cargados"}</small></div></div><b class="planning-lane-status neutral">${dayOffs.length}</b></header><button class="planning-lane-days-off" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"}>${dayOffs.length ? dayOffs.map((dayOff) => `<span class="planning-lane-off-chip ${dayOff.source === "manualDayOff" ? "manual" : ""}"><strong>${escapeHtml(dayOff.name)}</strong><small>${escapeHtml(dayOff.type || "Franco")}</small></span>`).join("") : "Agregar franco"}</button></section>`;
+  return `<section class="planning-lane planning-lane-off"><header><div class="planning-lane-title"><span>○</span><div><h3>Francos · ${sector}</h3><small>${dayOffs.length ? `${dayOffs.length} personas disponibles` : "Sin francos cargados"}</small></div></div><b class="planning-lane-status neutral">${dayOffs.length}</b></header><button class="planning-lane-days-off" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"}>${dayOffs.length ? dayOffs.map((dayOff) => `<span class="planning-lane-off-chip ${dayOff.source === "manualDayOff" ? "manual" : ""}"><strong>${escapeHtml(dayOff.name)}</strong></span>`).join("") : "Agregar franco"}</button></section>`;
 }
 
 function planningGoogleStat(label, value, meta) {
@@ -629,7 +633,7 @@ function planningGoogleStat(label, value, meta) {
 function staffPublishedPlanningWeekPage(week) {
   const conflicts = detectPlanningConflicts(week);
   const showOperationalExceptions = isAdminRole(user.role);
-  return `${pageHeading("GRILLA PUBLICADA", week.name, `${formatIsoDate(week.startDate)} — ${formatIsoDate(week.endDate)}`)}
+  return `${pageHeading("GRILLA PUBLICADA", "", "")}
     <section class="week-lifecycle-card week-published staff-published-week">
       <div class="week-lifecycle-head"><span class="week-state-icon">✓</span><div><span class="eyebrow">SOLO LECTURA</span><h2>${escapeHtml(week.name)}</h2><p>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)} · Publicada ${formatDateTime(week.publishedAt)}</p></div><span class="week-status published">Publicada</span></div>
       <div class="week-empty-canvas">
@@ -718,6 +722,7 @@ function compactEmployeeName(name) {
   const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "";
   const first = parts[0];
+  if (first.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase() === "veronica") return "Vero";
   const initials = parts.slice(1).map((part) => `${part[0]}.`).join(" ");
   return initials ? `${first} ${initials}` : first;
 }
@@ -767,7 +772,7 @@ function planningPositionSector(week, section, conflicts, showExceptions = true,
     }).join("")}`;
   };
   return `<section class="planning-position-sector reference-sector reference-sector-${section.key}" aria-labelledby="planning-${section.key}-title">
-    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">${section.icon}</span><div><span class="reference-sector-eyebrow">${section.eyebrow}</span><h2 id="planning-${section.key}-title">${section.sector}</h2>${section.description ? `<p>${section.description}</p>` : ""}</div></header>
+    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">${section.icon}</span><div><h2 id="planning-${section.key}-title">${section.sector}</h2>${section.description ? `<p>${section.description}</p>` : ""}</div></header>
     <div class="planning-position-board"><div class="planning-position-grid" style="--morning-rows:${rowsByShift["Mañana"].length};--afternoon-rows:${rowsByShift["Tarde"].length}">
       <div class="planning-position-corner"><span class="sr-only">Puesto</span>${staffView ? "" : `<small>${week.assignments.length} asignados</small>`}</div>
       ${dates.map((date, index) => `<div class="planning-position-day ${index === dates.length - 1 ? "is-last-day" : ""}"><span>${dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
@@ -782,13 +787,13 @@ function planningDaysOffSector(week, sector, daysOffSummary, conflicts) {
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
   const sectionId = `planning-days-off-${sector.toLowerCase()}`;
   const displaySector = sector === "Pisos" ? "Camareras" : sector;
-  const title = `FRANCOS ${displaySector.toUpperCase()}`;
+  const title = `Francos ${displaySector}`;
   return `<section class="planning-position-sector reference-sector reference-sector-off" aria-labelledby="${sectionId}">
-    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">○</span><div><span class="reference-sector-eyebrow">DISPONIBILIDAD</span><h2 id="${sectionId}">${title}</h2><p>Francos manuales y F1/F2 calculados por ciclo.</p></div></header>
+    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">☕</span><div><h2 id="${sectionId}">${title}</h2></div></header>
     <div class="planning-position-board"><div class="planning-position-grid planning-days-off-grid">
-      <div class="planning-position-corner"><strong>${title}</strong><small>Manual · Ciclo</small></div>
+      <div class="planning-position-corner"><span class="sr-only">${title}</span></div>
       ${dates.map((date, index) => `<div class="planning-position-day"><span>${dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
-      <div class="planning-position-row-label"><strong>Personal de franco</strong><small>Manual prevalece</small></div>${dates.map((date) => planningDaysOffCell(week, sector, date, daysOffSummary?.[sector]?.[date] || [], editable, conflicts)).join("")}
+      <div class="planning-position-row-label"><strong>Personal de franco</strong></div>${dates.map((date) => planningDaysOffCell(week, sector, date, daysOffSummary?.[sector]?.[date] || [], editable, conflicts)).join("")}
     </div></div>
   </section>`;
 }
@@ -796,7 +801,7 @@ function planningDaysOffSector(week, sector, daysOffSummary, conflicts) {
 function planningDaysOffCell(week, sector, date, dayOffs, editable, conflicts) {
   return `<div class="planning-position-cell planning-days-off-cell"><button class="planning-day-off-button ${dayOffs.length ? "assigned" : "empty"}" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"} aria-label="Cargar franco de ${sector} para ${formatIsoDate(date)}">${dayOffs.length ? dayOffs.map((dayOff) => {
     const warnings = dayOff.dayOffId ? conflicts.dayOffWarnings.get(dayOff.dayOffId) || [] : [];
-    return `<span class="planning-day-off-chip ${warnings.length ? "warning" : ""} ${dayOff.source === "calculatedCycle" ? "calculated" : "manual"}"><strong>${dayOff.name}</strong><small>${dayOff.type || "Franco"}${dayOff.source === "manualDayOff" ? " · Manual" : ""}</small>${warnings.length ? `<em>${warnings[0]}</em>` : ""}</span>`;
+    return `<span class="planning-day-off-chip ${warnings.length ? "warning" : ""} ${dayOff.source === "calculatedCycle" ? "calculated" : "manual"}"><strong>${dayOff.name}</strong>${warnings.length ? `<em>${warnings[0]}</em>` : ""}</span>`;
   }).join("") : `<span>Sin francos</span>`}</button></div>`;
 }
 
@@ -1155,29 +1160,72 @@ function employeeFrancos(employee) {
   return `<details class="francos-details"><summary>${employee.francos.length} fechas cargadas</summary><div>${employee.francos.map((franco) => `<span class="franco-chip ${franco.tipo.toLowerCase()}"><b>${franco.tipo}</b> ${franco.fecha.slice(8, 10)}/${franco.fecha.slice(5, 7)}</span>`).join("")}</div></details>`;
 }
 
+function requestFilterOptions(visibleRequests, admin) {
+  const waitingForMe = visibleRequests.some((request) => request.status === "pendingPartner" && request.partnerEmployeeId === user.employeeId);
+  const waitingFromMe = visibleRequests.some((request) => request.status === "pendingPartner" && request.employeeId === user.employeeId);
+  const waitingDescription = admin
+    ? "Solicitudes esperando respuesta."
+    : waitingForMe
+      ? "Esperando tu respuesta."
+      : waitingFromMe
+        ? "Esperando respuesta del compañero."
+        : "Solicitudes esperando respuesta.";
+  return [
+    { id: "all", icon: "◉", title: "Todas", description: "Ver todas las solicitudes." },
+    { id: "active", icon: "●", title: "En curso", description: "Solicitudes pendientes o en revisión." },
+    { id: "waitingResponse", icon: "↔", title: "Esperando respuesta", description: waitingDescription },
+    { id: "approved", icon: "✓", title: "Aprobadas", description: "Solicitudes confirmadas." },
+    { id: "rejected", icon: "×", title: "Rechazadas", description: "Solicitudes no aprobadas." },
+    { id: "history", icon: "◷", title: "Historial", description: "Registro completo de solicitudes finalizadas." },
+  ].map((option) => ({ ...option, count: visibleRequests.filter((request) => requestMatchesFilter(request, option.id)).length }));
+}
+
+function requestSortValue(request) {
+  return request.revokedAt || request.updatedAt || request.resolvedAt || request.createdAt || request.date || request.id || "";
+}
+
+function sortRequestsForFilter(requests, filter) {
+  if (filter !== "history") return requests;
+  return [...requests].sort((a, b) => String(requestSortValue(b)).localeCompare(String(requestSortValue(a))));
+}
+
+function requestSummaryLine(request) {
+  const impact = request.scheduleImpact || {};
+  const target = impact.target || impact.proposed || impact.original || {};
+  const date = target.date ? formatShortDayMonth(target.date) : "";
+  const shift = target.shift ? `Turno ${target.shift}` : "";
+  return [date, shift].filter(Boolean).join(" · ") || request.detail || "Sin fecha definida";
+}
+
+function formatShortDayMonth(value) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}/.test(value)) return value || "";
+  const [year, month, day] = value.slice(0, 10).split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return new Intl.DateTimeFormat("es-AR", { day: "numeric", month: "short", timeZone: "UTC" }).format(date).replace(".", "");
+}
+
 function requestsPage() {
   const admin = isAdminRole(user.role);
   const visibleRequests = (admin ? state.requests : state.requests.filter((r) => r.employeeId === user.employeeId || r.partnerEmployeeId === user.employeeId)).map(normalizeRequestForView);
-  const filtered = visibleRequests.filter((request) => requestMatchesFilter(request, requestFilter));
-  const tabs = [
-    ["all", "Todas"],
-    ["active", "Pendientes"],
-    ["pending", "Pendiente"],
-    ["pendingPartner", "Compañero"],
-    ["partnerRejected", "Rechazadas comp."],
-    ["pendingManager", "Encargada"],
-    ["approved", "Aprobadas"],
-    ["rejected", "Rechazadas"],
-  ];
-  return `${pageHeading("GESTIÓN", admin ? "Solicitudes" : "Mis solicitudes", admin ? "Revisá y resolvé los pedidos del equipo." : "Creá pedidos y seguí su resolución.", `<button class="button primary" data-action="new-request">${icons.plus} Nueva solicitud</button>`)}
-    <div class="tabs">${tabs.map(([id, label]) => `<button class="${requestFilter === id ? "active" : ""}" data-action="filter-request" data-filter="${id}">${label}${id === "active" ? `<b>${visibleRequests.filter((r) => activeRequestStatuses.includes(r.status)).length}</b>` : ""}</button>`).join("")}</div>
-    <section class="request-cards">${filtered.map((r) => requestCard(r, admin)).join("") || empty("No hay solicitudes en este estado")}</section>`;
+  const filters = requestFilterOptions(visibleRequests, admin);
+  if (!filters.some((filter) => filter.id === requestFilter)) requestFilter = "all";
+  const filtered = sortRequestsForFilter(visibleRequests.filter((request) => requestMatchesFilter(request, requestFilter)), requestFilter);
+  return `${pageHeading("GESTIÓN", admin ? "Solicitudes" : "Mis solicitudes", admin ? "Revisá y resolvé los pedidos del equipo." : "", `<button class="button primary" data-action="new-request">${icons.plus} Nueva solicitud</button>`)}
+    <section class="requests-layout">
+      <aside class="request-filter-panel" aria-label="Filtros de solicitudes">
+        <h2>Filtros</h2>
+        <div class="request-filter-list">${filters.map((filter) => `<button class="request-filter-card ${requestFilter === filter.id ? "active" : ""}" data-action="filter-request" data-filter="${filter.id}"><span class="request-filter-icon">${filter.icon}</span><span><strong>${escapeHtml(filter.title)}</strong></span><b>${filter.count}</b></button>`).join("")}</div>
+      </aside>
+      <section class="request-results-panel">
+        <div class="request-results-head"><span>${escapeHtml(filters.find((filter) => filter.id === requestFilter)?.title || "Solicitudes")}</span><b>${filtered.length}</b></div>
+        <div class="request-cards">${filtered.map((r) => requestCard(r, admin)).join("") || empty("No hay solicitudes en este filtro")}</div>
+      </section>
+    </section>`;
 }
 
 function requestCard(r, admin) {
   const request = normalizeRequestForView(r);
-  const meta = requestMetaItems(request);
-  return `<article class="request-card"><div class="request-card-top"><span class="request-icon large">${request.type === "absence" ? "+" : "↔"}</span><div><span class="request-id">${escapeHtml(request.id)}</span><h3>${escapeHtml(requestTypes[request.type] || request.type)}</h3><p>${escapeHtml(request.detail)}</p></div><span class="badge ${request.status}">${escapeHtml(statusText[request.status] || request.status)}</span></div><div class="request-meta"><span><small>SOLICITANTE</small><strong>${escapeHtml(request.employee)}</strong></span>${meta.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join("")}</div><div class="card-actions"><button class="button secondary" data-action="view-request" data-id="${request.id}">Ver detalle</button>${admin && canManagerResolveRequest(request) ? `<span class="muted">Requiere revisión</span>` : ""}</div></article>`;
+  return `<article class="request-card"><div class="request-card-top"><span class="request-icon large">${request.type === "absence" ? "+" : "↔"}</span><div><span class="request-id">${escapeHtml(request.id)}</span><h3>${escapeHtml(requestTypes[request.type] || request.type)}</h3><p>${escapeHtml(request.detail)}</p></div></div><div class="request-card-status"><span class="badge ${request.status}">${escapeHtml(statusText[request.status] || request.status)}</span>${admin && canManagerResolveRequest(request) ? `<small>Requiere revisión</small>` : ""}</div><p class="request-card-summary">${escapeHtml(requestSummaryLine(request))}</p><div class="card-actions"><button class="text-link" data-action="view-request" data-id="${request.id}">Ver detalle →</button></div></article>`;
 }
 
 function notificationsPage() {
