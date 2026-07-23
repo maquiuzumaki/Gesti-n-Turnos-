@@ -29,7 +29,7 @@ let employeeSearch = "";
 let requestFilter = "all";
 
 const icons = {
-  dashboard: "▦", schedule: "▤", employees: "♙", requests: "↔", notifications: "📣", audit: "◷", logout: "↪", plus: "+", menu: "☰",
+  dashboard: "▦", schedule: "▤", employees: "♙", requests: "↔", notifications: "🔔", audit: "◷", logout: "↪", plus: "+", menu: "☰",
 };
 const loginIcons = {
   user: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>`,
