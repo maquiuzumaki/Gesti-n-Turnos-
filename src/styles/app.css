@@ -114,8 +114,8 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
 .eyebrow { display: block; margin-bottom: 7px; color: var(--uzumaki-orange-800); font-size: 12px; font-weight: 800; letter-spacing: .14em; }
 .eyebrow.light { color: var(--uzumaki-yellow-300); }
-.page-heading .eyebrow { margin-bottom: 3px; color: var(--uzumaki-brown-900); font: 800 20px/1.08 "Manrope", sans-serif; letter-spacing: -.02em; }
-.page-heading h1 { margin: 0 0 5px; color: var(--uzumaki-muted); font: 600 15px/1.25 "DM Sans", sans-serif; letter-spacing: 0; }
+.page-heading .eyebrow { margin-bottom: 3px; color: var(--uzumaki-orange-800); font: 800 20px/1.08 "Manrope", sans-serif; letter-spacing: -.02em; }
+.page-heading h1 { margin: 0 0 5px; color: inherit; font: 600 15px/1.25 "DM Sans", sans-serif; letter-spacing: 0; }
 .page-heading p { margin: 0; color: var(--muted); }
 .heading-actions { display: flex; gap: 9px; }
 
