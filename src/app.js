@@ -1,7 +1,10 @@
-import { authenticate, endSession, hydrateStateFromJson, loadState, resetState, saveState, serializeState, STATE_FILE_NAME } from "./services/store.js?v=20260717-2";
+import { clearCachedState, hydrateStateFromJson, loadState, resetState, saveState, serializeState, STATE_FILE_NAME, STATE_STORAGE_LABEL } from "./services/store.js?v=20260726-05";
+import { authenticate, endSession, requestApi } from "./services/api.js?v=20260726-01";
+import { showToast } from "./ui/feedback.js?v=20260726-01";
+import { closeModal as closeModalUi, openModal } from "./ui/modal.js?v=20260726-01";
 import { canEditApplications, canEditSchedule, canManageEmployees, canResolveRequests, canSeeAudit, isAdminRole, roleLabel } from "./services/permissions.js?v=20260712-3";
 import { createDraftPlanningWeek, ensureKitchenPlanningSlots } from "./services/planningWeeks.js?v=20260716-1";
-import { applyApprovedAbsenceOrLeave, applyApprovedShiftChange, applyGustavoJulioException, buildDailyDaysOffSummary, buildWeeklyAvailabilityMap, generateFloorCoverageAssignments, generateHabitualAssignments, generateKitchenMorningCollaborationAssignments, revokePlanningApplication } from "./services/planningEngine.js?v=20260717-6";
+import { applyApprovedAbsenceOrLeave, applyApprovedShiftChange, applyGustavoJulioException, buildDailyDaysOffSummary, buildWeeklyAvailabilityMap, generateFloorCoverageAssignments, generateHabitualAssignments, generateKitchenMorningCollaborationAssignments } from "./services/planningEngine.js?v=20260717-6";
 
 const SESSION_KEY = "uzumaki-user-v5";
 let user = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null");
@@ -9,13 +12,15 @@ const app = document.querySelector("#app");
 const toastRegion = document.querySelector("#toast-region");
 let state;
 try {
-  state = await loadState({ remote: Boolean(user), requireAuth: Boolean(user) });
+  state = user?.mustChangePassword
+    ? await loadState({ remote: false })
+    : await loadState({ remote: Boolean(user), requireAuth: Boolean(user) });
 } catch {
   user = null;
   sessionStorage.removeItem(SESSION_KEY);
   state = await loadState({ remote: false });
 }
-if (user && !state.users.some((item) => item.id === user.id || item.username === user.username)) {
+if (user && !user.mustChangePassword && !state.users.some((item) => item.id === user.id || item.username === user.username)) {
   user = null;
   sessionStorage.removeItem(SESSION_KEY);
 }
@@ -27,13 +32,10 @@ let selectedPlanningWeekIds = new Set();
 let sidebarCollapsed = sessionStorage.getItem("uzumaki-sidebar-collapsed") === "true";
 let employeeSearch = "";
 let requestFilter = "all";
+let planningFocusedEmployeeId = null;
 
 const icons = {
-  dashboard: "▦", schedule: "▤", employees: "♙", requests: "↔", notifications: "🔔", audit: "◷", logout: "↪", plus: "+", menu: "☰",
-};
-const loginIcons = {
-  user: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>`,
-  lock: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><path d="M6.5 11h11a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 17.5 20h-11A1.5 1.5 0 0 1 5 18.5v-6A1.5 1.5 0 0 1 6.5 11Z"/></svg>`,
+  dashboard: "▦", schedule: "▤", employees: "♙", requests: "↔", notifications: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>', audit: "◷", logout: "↪", plus: "+", menu: "☰",
 };
 const statusText = {
   pending: "Pendiente",
@@ -85,11 +87,7 @@ const exceptionTypes = {
 };
 
 function toast(message, tone = "success") {
-  const node = document.createElement("div");
-  node.className = `toast ${tone}`;
-  node.textContent = message;
-  toastRegion.append(node);
-  setTimeout(() => node.remove(), 3200);
+  showToast(toastRegion, message, tone);
 }
 
 function audit(action, entity, result) {
@@ -108,13 +106,54 @@ async function persist(options = {}) {
   }
 }
 
+function applyApiFragment(result) {
+  if (!result || typeof result !== "object") return;
+  if (result.week) {
+    state.planningWeek = result.week;
+    const index = (state.weeklySchedules || []).findIndex((week) => week.id === result.week.id);
+    if (index >= 0) state.weeklySchedules[index] = result.week;
+    else state.weeklySchedules = [result.week, ...(state.weeklySchedules || [])];
+  }
+  if (result.deletedWeekId) {
+    state.weeklySchedules = (state.weeklySchedules || []).filter((week) => week.id !== result.deletedWeekId);
+    if (state.planningWeek?.id === result.deletedWeekId) state.planningWeek = null;
+  }
+  if (result.request) {
+    const index = (state.requests || []).findIndex((request) => request.id === result.request.id);
+    if (index >= 0) state.requests[index] = result.request;
+    else state.requests = [result.request, ...(state.requests || [])];
+  }
+  if (Array.isArray(result.notifications)) state.notifications = result.notifications;
+  if (Array.isArray(result.employees)) state.employees = result.employees;
+  if (Array.isArray(result.users)) state.users = result.users;
+  if (result.catalogs) state.catalogs = result.catalogs;
+}
+
+// Los cambios operativos se envían como comandos pequeños. El backend valida
+// y responde con el recurso actualizado; nunca se vuelve a descargar el
+// estado completo después de una acción.
+async function apiCommand(path, payload = null, method = "POST", extraHeaders = {}, reloadState = true) {
+  const result = await requestApi(path, {
+    method,
+    payload: payload === null ? undefined : payload,
+    headers: extraHeaders,
+  });
+  if (reloadState) {
+    applyApiFragment(result);
+    render();
+  }
+  return result;
+}
+
 function persistenceActions() {
-  return `<div class="heading-actions"><button class="button secondary" data-action="export-state-json">Exportar JSON</button>${canEditApplications(user.role) ? `<button class="button primary" data-action="import-state-json">Importar JSON</button>` : ""}</div>`;
+  return "";
 }
 
 function render() {
   if (!user) return renderLogin();
-  const contentClass = page === "dashboard" ? "content dashboard-content" : "content";
+  // El resumen operativo tiene una grilla compacta de tres filas. El perfil del
+  // operario contiene más bloques y debe conservar su flujo vertical natural.
+  const contentClass = page === "dashboard" && isAdminRole(user.role) ? "content dashboard-content" : "content";
   app.innerHTML = `<div class="app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}">
     ${sidebar()}
     <div class="workspace">
@@ -124,7 +163,7 @@ function render() {
   </div>`;
 }
 
-function renderLogin(error = "") {
+function renderLogin(error = "", username = "") {
   app.innerHTML = `<main class="login-page">
     <section class="login-brand">
       <div class="login-brand-header"><span class="brand-mark large"><img src="./assets/ICONO.webp" alt="" /></span><div><strong>UZUMAKI</strong><small>Gestión operativa</small></div></div>
@@ -134,9 +173,9 @@ function renderLogin(error = "") {
         <div class="mobile-logo"><span class="brand-mark"><img src="./assets/ICONO.webp" alt="" /></span><div><strong>Uzumaki</strong><small>Gestión operativa</small></div></div>
         <span class="eyebrow">BIENVENIDOS</span>
         <h2>Ingresá a tu espacio</h2>
-        ${error ? `<div class="form-error">${error}</div>` : ""}
-        <label>Usuario<div class="input-field"><span class="input-icon" aria-hidden="true">${loginIcons.user}</span><input name="username" autocomplete="username" required autofocus /></div></label>
-        <label>Contraseña<div class="input-field password-field"><span class="input-icon" aria-hidden="true">${loginIcons.lock}</span><input name="password" type="password" autocomplete="current-password" required /><button type="button" class="text-button" data-action="toggle-password">Ver</button></div></label>
+        ${error ? `<div class="form-error">${escapeHtml(error)}</div>` : ""}
+        <label>Usuario<input name="username" value="${escapeHtml(username)}" autocomplete="username" required autofocus /></label>
+        <label>Contraseña<div class="password-field"><input name="password" type="password" autocomplete="current-password" required /><button type="button" class="text-button" data-action="toggle-password">Ver</button></div></label>
         <button class="button primary wide" type="submit">Ingresar <span>→</span></button>
       </form>
     </section>
@@ -150,15 +189,15 @@ function sidebar() {
     : [["dashboard", "Mi resumen"], ["schedule", "Mi semana"], ["requests", "Mis solicitudes"], ["notifications", "Notificaciones"]];
   return `<aside class="sidebar ${sidebarCollapsed ? "collapsed" : ""}" id="sidebar" aria-label="Navegación principal">
     <button class="brand" type="button" data-action="toggle-sidebar" aria-label="${sidebarCollapsed ? "Expandir menú" : "Contraer menú"}" title="${sidebarCollapsed ? "Expandir menú" : "Contraer menú"}"><span class="brand-mark"><img src="./assets/ICONO.webp" alt="" /></span><div><strong>Uzumaki</strong><small>Gestión operativa</small></div></button>
-    <nav>${items.map(([id, label]) => `<button class="nav-item ${page === id ? "active" : ""}" data-page="${id}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"><span class="nav-icon">${icons[id]}</span><span class="nav-label">${escapeHtml(label)}</span>${id === "notifications" && unreadCount() ? `<b>${unreadCount()}</b>` : ""}</button>`).join("")}</nav>
-    <div class="sidebar-foot"><div class="mini-avatar">${initials(user.name)}</div><div><strong>${escapeHtml(user.name)}</strong><small>${escapeHtml(roleLabel[user.role])}</small></div><button title="Cerrar sesión" data-action="logout" aria-label="Cerrar sesión">${icons.logout}</button></div>
+    <nav>${items.map(([id, label]) => `<button class="nav-item ${page === id ? "active" : ""}" data-page="${id}" aria-label="${escapeHtml(label)}" ${page === id ? 'aria-current="page"' : ""} title="${escapeHtml(label)}"><span class="nav-icon">${icons[id]}</span><span class="nav-label">${escapeHtml(label)}</span>${id === "notifications" && unreadCount() ? `<b>${unreadCount()}</b>` : ""}</button>`).join("")}</nav>
+    <button class="sidebar-foot user-session" type="button" data-action="confirm-logout" aria-label="Abrir opciones de sesión de ${escapeHtml(user.name)}"><span class="mini-avatar">${initials(user.name)}</span><span><strong>${escapeHtml(user.name)}</strong><small>${escapeHtml(roleLabel[user.role])}</small></span><span class="session-exit" aria-hidden="true">${icons.logout}</span></button>
   </aside>`;
 }
 
 function topbar() {
   const titles = { dashboard: isAdminRole(user.role) ? "Resumen operativo" : `Hola, ${user.name.split(" ")[0]}`, schedule: isAdminRole(user.role) ? "Grilla operativa" : "Mi semana", employees: "Personal", requests: isAdminRole(user.role) ? "Solicitudes" : "Mis solicitudes", notifications: "Notificaciones", audit: "Auditoría" };
   const weekLabel = state.planningWeek ? `${formatIsoDate(state.planningWeek.startDate)} — ${formatIsoDate(state.planningWeek.endDate)}` : "Semana sin crear";
-  return `<header class="topbar"><button class="mobile-menu" data-action="menu">${icons.menu}</button><div><span class="crumb">Uzumaki /</span><strong>${titles[page]}</strong></div><div class="top-actions"><button class="icon-button" data-page="notifications" aria-label="Notificaciones">${icons.notifications}${unreadCount() ? `<b>${unreadCount()}</b>` : ""}</button><span class="date-pill">${weekLabel}</span></div></header>`;
+  return `<header class="topbar"><button class="mobile-menu" data-action="menu" aria-label="Abrir menú de navegación">${icons.menu}</button><div><span class="crumb">Uzumaki /</span><strong>${titles[page]}</strong></div><div class="top-actions"><button class="icon-button" data-page="notifications" aria-label="Notificaciones">${icons.notifications}${unreadCount() ? `<b>${unreadCount()}</b>` : ""}</button><span class="date-pill">${weekLabel}</span></div></header>`;
 }
 
 function renderPage() {
@@ -166,8 +205,8 @@ function renderPage() {
   return (pages[page] || dashboardPage)();
 }
 
-function pageHeading(kicker, title, description, action = "", extraClass = "") {
-  return `<div class="page-heading ${extraClass}"><div><span class="eyebrow">${escapeHtml(kicker)}</span><h1>${escapeHtml(title)}</h1>${description ? `<p>${escapeHtml(description)}</p>` : ""}</div>${action}</div>`;
+function pageHeading(kicker, title, description, action = "") {
+  return `<div class="page-heading"><div><span class="eyebrow">${escapeHtml(kicker)}</span><h1>${escapeHtml(title)}</h1>${description ? `<p>${escapeHtml(description)}</p>` : ""}</div>${action}</div>`;
 }
 
 function dashboardPage() {
@@ -189,7 +228,7 @@ function dashboardPage() {
 function operationalSnapshot() {
   const week = state.planningWeek;
   const dates = [...new Set((week?.operationalPositions || []).map((position) => position.date))].sort();
-  const date = dates.find((item) => item >= new Date().toISOString().slice(0, 10)) || dates[0];
+  const date = dates.find((item) => item >= localIsoDate()) || dates[0];
   const positions = (week?.operationalPositions || []).filter((position) => position.date === date && !isOptionalPlanningPosition(position));
   const assignments = new Set((week?.assignments || []).map((assignment) => assignment.positionId));
   const groups = [["Cocina", "Mañana"], ["Cocina", "Tarde"], ["Pisos", "Mañana"], ["Pisos", "Tarde"]];
@@ -221,7 +260,10 @@ function staffDashboard() {
     return `${pageHeading("MI PERFIL", "Información operativa", "Tu usuario no está vinculado a un empleado operativo.")}
       <section class="panel">${empty("No encontramos información operativa para este usuario")}</section>`;
   }
-  return `${pageHeading("MI PERFIL", `Hola, ${employee.name}`, "", `<button class="button secondary" data-page="schedule">Ver grilla publicada</button>`, "staff-profile-heading")}
+  const planningButton = publishedWeek
+    ? `<button class="button primary staff-grid-pulse" data-page="schedule">Ver mi grilla semanal</button>`
+    : `<button class="button secondary" disabled>Sin grilla publicada</button>`;
+  return `${pageHeading("MI PERFIL", `Hola, ${employee.name}`, "Esta es tu información operativa visible en Uzumaki.", planningButton)}
     <section class="staff-profile-hero">
       <div class="staff-profile-avatar">${employee.initials}</div>
       <div><span class="eyebrow light">PERSONAL OPERATIVO</span><h2>${employee.name}</h2><p>${employee.role} · ${employee.sector || "Sin sector"} · ${employee.turno || "Turno flexible"}</p></div>
@@ -401,9 +443,8 @@ function canViewRequestDetail(request) {
 
 function requestMatchesFilter(request, filter) {
   if (filter === "all") return true;
-  if (filter === "active") return ["pending", "pendingManager", "review"].includes(request.status) || request.status === "partnerAccepted";
+  if (filter === "active") return activeRequestStatuses.includes(request.status);
   if (filter === "waitingResponse") return request.status === "pendingPartner";
-  if (filter === "approved") return request.status === "approved";
   if (filter === "rejected") return ["rejected", "partnerRejected"].includes(request.status);
   if (filter === "history") return ["approved", "rejected", "partnerRejected", "revoked"].includes(request.status);
   return request.status === filter;
@@ -436,8 +477,10 @@ function planningWeekStatusIcon(status) {
 }
 
 function planningWeekLifecycleActions(week) {
-  const saveButton = `<button class="button secondary planning-icon-action" data-action="save-planning-week" aria-label="Guardar grilla" title="Guardar grilla"><span aria-hidden="true">⌑</span></button>`;
-  const suggestButton = `<button class="button planning-proposal-action magic-pulse" data-action="generate-planning-proposal" title="Generar propuesta automática"><span aria-hidden="true">✦</span><span>Propuesta</span></button>`;
+  // La propuesta automática y el guardado integral se migrarán al backend.
+  // Se ocultan mientras PostgreSQL es la única fuente de escritura.
+  const saveButton = "";
+  const suggestButton = "";
   const exceptionButton = `<button class="button secondary planning-exception-action" data-action="new-week-exception">Excepción</button>`;
   const publishButton = `<button class="button primary planning-publish-action" data-action="publish-planning-week">${week.status === "paused" ? "Republicar" : "Publicar"}</button>`;
   const deleteButton = `<button class="button danger-soft planning-icon-action planning-delete-action" data-action="delete-planning-week" aria-label="Eliminar grilla" title="Eliminar grilla"><span aria-hidden="true">🗑</span></button>`;
@@ -491,6 +534,9 @@ function planningSnapshots() {
 function planningWeekHasUnsavedChanges(week) {
   const stored = (state.weeklySchedules || []).find((item) => item.id === week?.id);
   if (!week || !stored) return Boolean(week);
+  // El bootstrap conserva el historial como resúmenes. Un resumen no puede
+  // usarse para decidir si la grilla abierta fue modificada localmente.
+  if (!Array.isArray(stored.operationalPositions)) return false;
   return JSON.stringify(week) !== JSON.stringify(stored);
 }
 
@@ -502,15 +548,15 @@ function planningLibraryPage() {
   const selectedCount = selectedPlanningWeekIds.size;
   return `${pageHeading("PLANIFICACIÓN SEMANAL", "Grillas almacenadas", "Consultá semanas anteriores, retomá un borrador o creá una nueva planificación.", canCreate ? `<button class="button primary" data-action="new-planning-week">${icons.plus} Nueva grilla</button>` : "")}
     <section class="planning-library" aria-label="Grillas guardadas">
-      <div class="planning-library-head"><div><span class="eyebrow">HISTORIAL</span><h2>${weeks.length ? `${weeks.length} grillas guardadas` : "Todavía no hay grillas guardadas"}</h2></div><span class="planning-library-file">${STATE_FILE_NAME}</span></div>
+      <div class="planning-library-head"><div><span class="eyebrow">HISTORIAL</span><h2>${weeks.length ? `${weeks.length} grillas guardadas` : "Todavía no hay grillas guardadas"}</h2></div><span class="planning-library-file">${STATE_STORAGE_LABEL}</span></div>
       ${selectedCount ? `<div class="planning-library-selection"><span><b>${selectedCount}</b> ${selectedCount === 1 ? "grilla seleccionada" : "grillas seleccionadas"}</span><div><button class="button secondary" data-action="clear-planning-week-selection">Limpiar</button><button class="button danger-soft" data-action="delete-selected-planning-weeks">Eliminar seleccionadas</button></div></div>` : ""}
       ${weeks.length ? `<div class="planning-library-list">${weeks.map(planningLibraryItem).join("")}</div>` : empty("Guardá una planificación para que quede disponible aquí.")}
     </section>`;
 }
 
 function planningLibraryItem(week) {
-  const assigned = (week.assignments || []).length;
-  const total = (week.operationalPositions || []).length;
+  const assigned = Number.isInteger(week.assignmentCount) ? week.assignmentCount : (week.assignments || []).length;
+  const total = Number.isInteger(week.positionCount) ? week.positionCount : (week.operationalPositions || []).length;
   const isCurrent = state.planningWeek?.id === week.id;
   const isSelected = selectedPlanningWeekIds.has(week.id);
   return `<article class="planning-library-item ${isCurrent ? "current" : ""} ${isSelected ? "selected" : ""}">
@@ -580,27 +626,6 @@ function planningLanesStructure(week, conflicts, daysOffSummary) {
   </div>`;
 }
 
-function planningMobileWeekPanel(week, conflicts, daysOffSummary) {
-  const positions = week.operationalPositions.filter((position) => !isOptionalPlanningPosition(position));
-  const assigned = positions.filter((position) => week.assignments.some((assignment) => assignment.positionId === position.id)).length;
-  return `<section class="planning-mobile-panel" aria-label="Grilla semanal móvil">
-    <header class="planning-lanes-head">
-      <div><span class="eyebrow">VISTA MÓVIL</span><h2>Grilla por día</h2><p>Elegí un día para leer turnos, puestos y francos sin mover la pantalla completa.</p></div>
-      <span class="planning-mobile-coverage"><b>${assigned}</b>/<small>${positions.length}</small> cubiertos</span>
-    </header>
-    ${planningLaneDayTabs(week, conflicts)}
-    <div class="planning-lanes-summary">
-      ${planningGoogleStat("Puestos", positions.length, "Semana")}
-      ${planningGoogleStat("Cubiertos", assigned, `${Math.max(positions.length - assigned, 0)} pendientes`)}
-      ${planningGoogleStat("Alertas", conflicts.total, "Revisión")}
-      ${planningGoogleStat("Día", planningDateIndex + 1, "de 7")}
-    </div>
-    ${planningLaneAlerts(week, conflicts)}
-    ${planningLanesStructure(week, conflicts, daysOffSummary)}
-    <footer class="planning-lanes-foot"><span>La grilla completa queda disponible en escritorio.</span><b>${formatIsoDate([...new Set(week.operationalPositions.map((position) => position.date))][planningDateIndex])}</b></footer>
-  </section>`;
-}
-
 function planningLane(week, section, date, conflicts) {
   const positions = week.operationalPositions.filter((position) => position.date === date && position.sector === section.sector && position.shift === section.shift);
   const required = positions.filter((position) => !isOptionalPlanningPosition(position));
@@ -623,7 +648,7 @@ function planningLaneSlot(week, position, conflicts) {
 function planningLaneDaysOff(week, sector, date, daysOffSummary, conflicts) {
   const dayOffs = daysOffSummary?.[sector]?.[date] || [];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
-  return `<section class="planning-lane planning-lane-off"><header><div class="planning-lane-title"><span>○</span><div><h3>Francos · ${sector}</h3><small>${dayOffs.length ? `${dayOffs.length} personas disponibles` : "Sin francos cargados"}</small></div></div><b class="planning-lane-status neutral">${dayOffs.length}</b></header><button class="planning-lane-days-off" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"}>${dayOffs.length ? dayOffs.map((dayOff) => `<span class="planning-lane-off-chip ${dayOff.source === "manualDayOff" ? "manual" : ""}"><strong>${escapeHtml(dayOff.name)}</strong></span>`).join("") : "Agregar franco"}</button></section>`;
+  return `<section class="planning-lane planning-lane-off"><header><div class="planning-lane-title"><span>○</span><div><h3>Francos · ${sector}</h3><small>${dayOffs.length ? `${dayOffs.length} personas disponibles` : "Sin francos cargados"}</small></div></div><b class="planning-lane-status neutral">${dayOffs.length}</b></header><button class="planning-lane-days-off" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"}>${dayOffs.length ? dayOffs.map((dayOff) => `<span class="planning-lane-off-chip ${dayOff.source === "manualDayOff" ? "manual" : ""}"><strong>${escapeHtml(dayOff.name)}</strong><small>${escapeHtml(dayOff.type || "Franco")}</small></span>`).join("") : "Agregar franco"}</button></section>`;
 }
 
 function planningGoogleStat(label, value, meta) {
@@ -633,12 +658,8 @@ function planningGoogleStat(label, value, meta) {
 function staffPublishedPlanningWeekPage(week) {
   const conflicts = detectPlanningConflicts(week);
   const showOperationalExceptions = isAdminRole(user.role);
-  return `${pageHeading("GRILLA PUBLICADA", "", "")}
-    <section class="week-lifecycle-card week-published staff-published-week">
+  return `<section class="week-lifecycle-card week-published staff-published-week">
       <div class="week-lifecycle-head"><span class="week-state-icon">✓</span><div><span class="eyebrow">SOLO LECTURA</span><h2>${escapeHtml(week.name)}</h2><p>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)} · Publicada ${formatDateTime(week.publishedAt)}</p></div><span class="week-status published">Publicada</span></div>
-      <div class="week-empty-canvas">
-        <span class="week-empty-symbol">▦</span><div><h3>Grilla semanal publicada</h3><p>Consultá tus turnos, francos y novedades de la semana.</p></div>
-      </div>
       ${showOperationalExceptions ? weeklyExceptionsPanel(week, canEditSchedule(user.role)) : ""}
       ${planningWeekStructure(week, conflicts, showOperationalExceptions)}
     </section>`;
@@ -646,19 +667,32 @@ function staffPublishedPlanningWeekPage(week) {
 
 function planningWeekStructure(week, conflicts, showExceptions = true, providedDaysOffSummary = null, simpleGridView = false) {
   const staffView = simpleGridView || !isAdminRole(user.role);
-  const showDayOffTables = staffView || showExceptions || canEditSchedule(user.role);
+  const focusedEmployeeId = user.role === "staff" ? user.employeeId : planningFocusedEmployeeId;
   const daysOffSummary = providedDaysOffSummary || buildDailyDaysOffSummary({
     employees: state.employees,
     week,
     availabilityMap: buildWeeklyAvailabilityMap(state.employees, week, { requests: state.requests }),
   });
-  return `${planningMobileWeekPanel(week, conflicts, daysOffSummary)}
-  <div class="planning-position-sectors planning-position-sectors--desktop ${staffView ? "planning-position-sectors--staff" : ""}" aria-label="Puestos operativos">
-    ${planningPositionSector(week, { sector: "Cocina", key: "kitchen", icon: "🍳", eyebrow: "SECTOR OPERATIVO" }, conflicts, showExceptions, staffView)}
-    ${showDayOffTables ? planningDaysOffSector(week, "Cocina", daysOffSummary, conflicts) : ""}
-    ${planningPositionSector(week, { sector: "Pisos", key: "floors", icon: "🏥", eyebrow: "COBERTURA POR PISO" }, conflicts, showExceptions, staffView)}
-    ${showDayOffTables ? planningDaysOffSector(week, "Pisos", daysOffSummary, conflicts) : ""}
+  return `${planningFocusToolbar(week, focusedEmployeeId, daysOffSummary)}<div class="planning-position-sectors ${staffView ? "planning-position-sectors--staff" : ""}" aria-label="Puestos operativos">
+    ${planningPositionSector(week, { sector: "Cocina", key: "kitchen", icon: "🍳", eyebrow: "SECTOR OPERATIVO" }, conflicts, showExceptions, staffView, focusedEmployeeId)}
+    ${planningDaysOffSector(week, "Cocina", daysOffSummary, conflicts)}
+    ${planningPositionSector(week, { sector: "Pisos", key: "floors", icon: "🏥", eyebrow: "COBERTURA POR PISO" }, conflicts, showExceptions, staffView, focusedEmployeeId)}
+    ${planningDaysOffSector(week, "Pisos", daysOffSummary, conflicts)}
   </div>`;
+}
+
+function planningFocusToolbar(week, focusedEmployeeId, daysOffSummary = {}) {
+  if (user.role === "staff") {
+    const turns = (week.assignments || []).filter((assignment) => assignment.employeeId === user.employeeId).length;
+    const daysOff = Object.values(daysOffSummary)
+      .flatMap((sectorDays) => Object.values(sectorDays).flat())
+      .filter((dayOff) => dayOff.employeeId === user.employeeId);
+    const offText = daysOff.length ? ` · ${daysOff.map((item) => `${formatIsoDate(item.date).slice(0, 5)} ${item.tipo || "Franco"}`).join(", ")}` : "";
+    return `<div class="planning-focus-summary"><strong>Mi semana · ${turns} turnos</strong><span>Mis asignaciones están resaltadas${offText}.</span></div>`;
+  }
+  if (user.role !== "supervisor") return "";
+  const options = state.employees.filter((employee) => employee.status === "active").map((employee) => `<option value="${employee.id}" ${focusedEmployeeId === employee.id ? "selected" : ""}>${escapeHtml(employee.name)}</option>`).join("");
+  return `<label class="planning-focus-control">Foco de empleado<select data-action="planning-focus-employee"><option value="">Vista operativa completa</option>${options}</select></label>`;
 }
 
 function weeklyExceptionsPanel(week, editable) {
@@ -718,19 +752,6 @@ function planningSpecialChip(assignment, position, employee, visible) {
   return "";
 }
 
-function compactEmployeeName(name) {
-  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return "";
-  const first = parts[0];
-  if (first.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase() === "veronica") return "Vero";
-  const initials = parts.slice(1).map((part) => `${part[0]}.`).join(" ");
-  return initials ? `${first} ${initials}` : first;
-}
-
-function planningAssignmentName(employee) {
-  return `<strong class="planning-assignment-name planning-assignment-name--full">${escapeHtml(employee.name)}</strong><strong class="planning-assignment-name planning-assignment-name--compact">${escapeHtml(compactEmployeeName(employee.name))}</strong>`;
-}
-
 function emptyPositionState(position, warnings) {
   if (!position) return "";
   if (position.sector === "Pisos") return `<span class="planning-empty-state critical">Sin cobertura</span>`;
@@ -739,9 +760,15 @@ function emptyPositionState(position, warnings) {
   return warnings.length ? "" : `<span class="planning-empty-state pending">Pendiente</span>`;
 }
 
-function planningPositionSector(week, section, conflicts, showExceptions = true, staffView = false) {
+function planningEmployeeName(employee) {
+  const firstName = String(employee?.name || "").trim().split(/\s+/)[0] || "Sin asignar";
+  const size = firstName.length >= 10 ? "extra-long" : firstName.length >= 8 ? "long" : "standard";
+  return `<strong class="planning-assignment-name--full">${escapeHtml(employee.name)}</strong><strong class="planning-assignment-name--compact ${size}">${escapeHtml(firstName)}</strong>`;
+}
+
+function planningPositionSector(week, section, conflicts, showExceptions = true, staffView = false, focusedEmployeeId = null) {
   const positions = week.operationalPositions.filter((position) => position.sector === section.sector);
-  const dates = [...new Set(positions.map((position) => position.date))];
+  const dates = [...new Set(positions.map((position) => position.date))].sort();
   const rows = positions
     .filter((position) => position.dayIndex === 0)
     .sort((a, b) => a.shift.localeCompare(b.shift) || (a.slot || 0) - (b.slot || 0) || a.label.localeCompare(b.label));
@@ -762,20 +789,26 @@ function planningPositionSector(week, section, conflicts, showExceptions = true,
     const assignment = position ? week.assignments.find((item) => item.positionId === position.id) : null;
     const employee = assignment ? state.employees.find((item) => item.id === assignment.employeeId) : null;
     const warnings = !staffView && position ? conflicts.positionWarnings.get(position.id) || [] : [];
-    const exceptions = showExceptions && position ? positionExceptions(week, position.id) : [];
+    const allExceptions = position ? positionExceptions(week, position.id) : [];
+    const exceptions = showExceptions
+      ? allExceptions
+      : allExceptions.filter((exception) => exception.affectedEmployeeId === focusedEmployeeId || exception.coverEmployeeId === focusedEmployeeId);
     const emptyState = !employee && !staffView ? emptyPositionState(position, warnings) : "";
     const specialChip = planningSpecialChip(assignment, position, employee, showSpecialChips);
+    const isFocused = Boolean(employee && employee.id === focusedEmployeeId);
+    const hasFocusedException = exceptions.some((exception) => exception.affectedEmployeeId === focusedEmployeeId || exception.coverEmployeeId === focusedEmployeeId);
     const assignmentContent = employee
-      ? staffView ? planningAssignmentName(employee) : `${planningAssignmentName(employee)}<small>${escapeHtml(employee.role)}</small>${specialChip}`
+      ? staffView ? planningEmployeeName(employee) : `${planningEmployeeName(employee)}<small>${escapeHtml(employee.role)}</small>${specialChip}`
       : emptyState;
-    return `<div class="planning-position-cell ${staffView ? "staff-view" : ""} ${index === dates.length - 1 ? "is-last-day" : ""} ${warnings.length ? "has-warning" : ""} ${exceptions.length ? "has-exception" : ""}"><button class="planning-position-assignment ${employee ? "assigned" : "empty"} ${staffView ? "staff-view" : ""} ${warnings.length ? "warning" : ""} ${exceptions.length ? "exception" : ""} ${!staffView && !employee && position?.sector === "Pisos" ? "critical-empty" : ""} ${!staffView && !employee && isOptionalPlanningPosition(position) ? "optional-empty" : ""}" type="button" ${editable && position ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"} aria-label="${employee ? `Cambiar asignación de ${position.label}: ${employee.name}` : `Asignar empleado a ${position?.label || row.label}`}">${assignmentContent}${staffView ? "" : `${positionExceptionSummary(exceptions)}${warnings.length ? `<em>${warnings[0]}</em>` : ""}`}</button></div>`;
+    return `<div class="planning-position-cell ${staffView ? "staff-view" : ""} ${isFocused ? "is-focused" : ""} ${hasFocusedException ? "has-focused-exception" : ""} ${index === dates.length - 1 ? "is-last-day" : ""} ${warnings.length ? "has-warning" : ""} ${exceptions.length ? "has-exception" : ""}"><button class="planning-position-assignment ${employee ? "assigned" : "empty"} ${isFocused ? "is-focused" : ""} ${staffView ? "staff-view" : ""} ${warnings.length ? "warning" : ""} ${exceptions.length ? "exception" : ""} ${!staffView && !employee && position?.sector === "Pisos" ? "critical-empty" : ""} ${!staffView && !employee && isOptionalPlanningPosition(position) ? "optional-empty" : ""}" type="button" ${editable && position ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"} aria-label="${employee ? `Cambiar asignación de ${position.label}: ${employee.name}` : `Asignar empleado a ${position?.label || row.label}`}">${assignmentContent}${staffView ? "" : `${positionExceptionSummary(exceptions)}${warnings.length ? `<em>${warnings[0]}</em>` : ""}`}</button></div>`;
     }).join("")}`;
   };
   return `<section class="planning-position-sector reference-sector reference-sector-${section.key}" aria-labelledby="planning-${section.key}-title">
-    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">${section.icon}</span><div><h2 id="planning-${section.key}-title">${section.sector}</h2>${section.description ? `<p>${section.description}</p>` : ""}</div></header>
-    <div class="planning-position-board"><div class="planning-position-grid" style="--morning-rows:${rowsByShift["Mañana"].length};--afternoon-rows:${rowsByShift["Tarde"].length}">
+    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">${section.icon}</span><div><span class="reference-sector-eyebrow">${section.eyebrow}</span><h2 id="planning-${section.key}-title">${section.sector}</h2>${section.description ? `<p>${section.description}</p>` : ""}</div></header>
+    <p class="planning-scroll-hint">Deslizá horizontalmente para recorrer los siete días.</p>
+    <div class="planning-position-board" tabindex="0" aria-label="Grilla semanal desplazable"><div class="planning-position-grid" style="--morning-rows:${rowsByShift["Mañana"].length};--afternoon-rows:${rowsByShift["Tarde"].length}">
       <div class="planning-position-corner"><span class="sr-only">Puesto</span>${staffView ? "" : `<small>${week.assignments.length} asignados</small>`}</div>
-      ${dates.map((date, index) => `<div class="planning-position-day ${index === dates.length - 1 ? "is-last-day" : ""}"><span>${dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
+      ${dates.map((date, index) => `<div class="planning-position-day ${date === localIsoDate() ? "is-today" : ""} ${index === dates.length - 1 ? "is-last-day" : ""}"><span>${dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
       ${shifts.map((shift) => `<div class="planning-shift-divider planning-shift-divider--${shift.modifier}"><span aria-hidden="true">${shift.icon}</span><strong>${shift.label}</strong></div>${rowsByShift[shift.value].map(rowMarkup).join("")}`).join("")}
     </div></div>
   </section>`;
@@ -786,14 +819,13 @@ function planningDaysOffSector(week, sector, daysOffSummary, conflicts) {
   const dayNames = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
   const sectionId = `planning-days-off-${sector.toLowerCase()}`;
-  const displaySector = sector === "Pisos" ? "Camareras" : sector;
-  const title = `Francos ${displaySector}`;
+  const title = `FRANCOS ${sector.toUpperCase()}`;
   return `<section class="planning-position-sector reference-sector reference-sector-off" aria-labelledby="${sectionId}">
-    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">☕</span><div><h2 id="${sectionId}">${title}</h2></div></header>
+    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">○</span><div><span class="reference-sector-eyebrow">DISPONIBILIDAD</span><h2 id="${sectionId}">${title}</h2></div></header>
     <div class="planning-position-board"><div class="planning-position-grid planning-days-off-grid">
-      <div class="planning-position-corner"><span class="sr-only">${title}</span></div>
+      <div class="planning-position-corner" aria-label="${title}"></div>
       ${dates.map((date, index) => `<div class="planning-position-day"><span>${dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
-      <div class="planning-position-row-label"><strong>Personal de franco</strong></div>${dates.map((date) => planningDaysOffCell(week, sector, date, daysOffSummary?.[sector]?.[date] || [], editable, conflicts)).join("")}
+      <div class="planning-position-row-label"><strong>Personal</strong></div>${dates.map((date) => planningDaysOffCell(week, sector, date, daysOffSummary?.[sector]?.[date] || [], editable, conflicts)).join("")}
     </div></div>
   </section>`;
 }
@@ -801,7 +833,10 @@ function planningDaysOffSector(week, sector, daysOffSummary, conflicts) {
 function planningDaysOffCell(week, sector, date, dayOffs, editable, conflicts) {
   return `<div class="planning-position-cell planning-days-off-cell"><button class="planning-day-off-button ${dayOffs.length ? "assigned" : "empty"}" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"} aria-label="Cargar franco de ${sector} para ${formatIsoDate(date)}">${dayOffs.length ? dayOffs.map((dayOff) => {
     const warnings = dayOff.dayOffId ? conflicts.dayOffWarnings.get(dayOff.dayOffId) || [] : [];
-    return `<span class="planning-day-off-chip ${warnings.length ? "warning" : ""} ${dayOff.source === "calculatedCycle" ? "calculated" : "manual"}"><strong>${dayOff.name}</strong>${warnings.length ? `<em>${warnings[0]}</em>` : ""}</span>`;
+    const type = dayOff.type || "Franco";
+    const sourceLabel = dayOff.source === "manualDayOff" ? "Manual" : "";
+    const meta = sourceLabel ? `${type} · ${sourceLabel}` : type;
+    return `<span class="planning-day-off-chip ${warnings.length ? "warning" : ""} ${dayOff.source === "calculatedCycle" ? "calculated" : "manual"}" title="${escapeHtml(dayOff.name)} · ${escapeHtml(meta)}"><strong>${escapeHtml(dayOff.name)}</strong><small>${escapeHtml(meta)}</small>${warnings.length ? `<em>${warnings[0]}</em>` : ""}</span>`;
   }).join("") : `<span>Sin francos</span>`}</button></div>`;
 }
 
@@ -898,31 +933,18 @@ function planningConflictPanel(conflicts) {
   </section>`;
 }
 
-function publishPlanningWeek() {
+async function publishPlanningWeek() {
   const week = state.planningWeek;
   if (!week || !["draft", "paused"].includes(week.status) || !canEditSchedule(user.role)) return;
   const conflicts = detectPlanningConflicts(week);
   if (conflicts.counts.duplicateAssignment) {
     return toast(`No se puede publicar: corregí ${conflicts.counts.duplicateAssignment} duplicado(s) dentro del mismo día.`, "error");
   }
-  const publishedAt = new Date().toISOString();
-  const wasPaused = week.status === "paused";
-  week.status = "published";
-  week.publishedAt = publishedAt;
-  week.publishedBy = { id: user.id || user.username, name: user.name, role: user.role };
-  week.pausedAt = "";
-  week.pausedBy = null;
-  state.notifications.unshift({
-    id: crypto.randomUUID(),
-    title: wasPaused ? "Grilla republicada" : "Nueva grilla publicada",
-    text: `${week.name} ya está visible para el personal.`,
-    time: "Ahora",
-    type: "schedule",
-    read: false,
-  });
-  audit(wasPaused ? "Republicó una grilla" : "Publicó una grilla manual", week.name, "Publicada");
-  persistPlanningWeekLifecycle(week);
-  toast(wasPaused ? "Grilla republicada correctamente" : "Grilla publicada correctamente");
+  try {
+    const wasPaused = week.status === "paused";
+    await apiCommand(`/api/planning/weeks/${encodeURIComponent(week.id)}/status`, { status: "published", version: week.version });
+    toast(wasPaused ? "Grilla republicada correctamente" : "Grilla publicada correctamente");
+  } catch (error) { toast(error.message, "error"); }
 }
 
 async function savePlanningWeekToJson() {
@@ -930,12 +952,12 @@ async function savePlanningWeekToJson() {
   if (!week || !canEditSchedule(user.role)) return;
   week.savedAt = new Date().toISOString();
   week.savedBy = { id: user.id || user.username, name: user.name, role: user.role };
-  audit("Guardó una planificación", week.name, STATE_FILE_NAME);
+  audit("Guardó una planificación", week.name, STATE_STORAGE_LABEL);
   try {
     await persistPlanningWeekLifecycle(week, { requireFile: true });
-    toast(`Planificación guardada en ${STATE_FILE_NAME}`);
+    toast(`Planificación guardada en ${STATE_STORAGE_LABEL}`);
   } catch (error) {
-    toast(error.message || `No se pudo guardar en ${STATE_FILE_NAME}`, "error");
+    toast(error.message || `No se pudo guardar en ${STATE_STORAGE_LABEL}`, "error");
   }
 }
 
@@ -956,13 +978,18 @@ function persistPlanningWeekLifecycle(week, options = {}) {
   return persist(options);
 }
 
-function openStoredPlanningWeek(weekId) {
+async function openStoredPlanningWeek(weekId) {
   const stored = planningSnapshots().find((week) => week.id === weekId);
   if (!stored || !canEditSchedule(user.role)) return toast("No se encontró la grilla almacenada.", "error");
   if (state.planningWeek && state.planningWeek.id !== weekId && planningWeekHasUnsavedChanges(state.planningWeek) && !confirm("La grilla actual tiene cambios sin guardar en el historial. ¿Abrir otra grilla de todos modos?")) return;
-  state.planningWeek = structuredClone(stored);
-  planningView = "editor";
-  render();
+  try {
+    const result = await requestApi(`/api/planning/weeks/${encodeURIComponent(weekId)}`);
+    applyApiFragment(result);
+    planningView = "editor";
+    render();
+  } catch (error) {
+    toast(error.message || "No se pudo abrir la grilla.", "error");
+  }
 }
 
 function generatePlanningProposal() {
@@ -1009,41 +1036,25 @@ function generatePlanningProposal() {
   toast(proposals.length ? `Propuesta generada: ${gustavoJulioResult.assignments.length - gustavoJulioResult.coverages.length} titulares, ${gustavoJulioResult.coverages.length} cobertura Gustavo/Julio, ${coverageResult.assignments.length} coberturas y ${kitchenCollaborations.length} colaboraciones${gapText}` : `No había asignaciones disponibles${gapText}`);
 }
 
-function pausePlanningWeek() {
+async function pausePlanningWeek() {
   const week = state.planningWeek;
   if (!week || week.status !== "published" || !canEditSchedule(user.role)) return;
   if (!confirm("¿Pausar la publicación? El personal dejará de ver esta grilla hasta que se republice.")) return;
-  week.status = "paused";
-  week.pausedAt = new Date().toISOString();
-  week.pausedBy = { id: user.id || user.username, name: user.name, role: user.role };
-  audit("Pausó una grilla publicada", week.name, "Pausada");
-  persistPlanningWeekLifecycle(week);
-  toast("Publicación pausada");
+  try { await apiCommand(`/api/planning/weeks/${encodeURIComponent(week.id)}/status`, { status: "paused", version: week.version }); toast("Publicación pausada"); } catch (error) { toast(error.message, "error"); }
 }
 
-function draftPlanningWeek() {
+async function draftPlanningWeek() {
   const week = state.planningWeek;
   if (!week || !["published", "paused"].includes(week.status) || !canEditSchedule(user.role)) return;
   if (!confirm("¿Volver la grilla a borrador? El personal dejará de verla hasta que se publique nuevamente.")) return;
-  week.status = "draft";
-  week.returnedToDraftAt = new Date().toISOString();
-  week.returnedToDraftBy = { id: user.id || user.username, name: user.name, role: user.role };
-  audit("Volvió una grilla a borrador", week.name, "Borrador");
-  persistPlanningWeekLifecycle(week);
-  toast("Grilla en borrador");
+  try { await apiCommand(`/api/planning/weeks/${encodeURIComponent(week.id)}/status`, { status: "draft", version: week.version }); toast("Grilla en borrador"); } catch (error) { toast(error.message, "error"); }
 }
 
-function deletePlanningWeek() {
+async function deletePlanningWeek() {
   const week = state.planningWeek;
   if (!week || !canEditSchedule(user.role)) return;
   if (!confirm("¿Eliminar esta grilla? Se quitará también del historial almacenado.")) return;
-  const weekName = week.name;
-  state.weeklySchedules = (state.weeklySchedules || []).filter((item) => item.id !== week.id);
-  state.planningWeek = null;
-  planningView = "library";
-  audit("Eliminó una grilla semanal", weekName, "Eliminada");
-  persist();
-  toast("Grilla eliminada");
+  try { await apiCommand(`/api/planning/weeks/${encodeURIComponent(week.id)}`, null, "DELETE", { "If-Match": String(week.version) }); planningView = "library"; toast("Grilla eliminada"); } catch (error) { toast(error.message, "error"); }
 }
 
 function deleteSelectedPlanningWeeks() {
@@ -1121,9 +1132,9 @@ function employeesPage() {
       .filter(Boolean)
       .some((value) => value.toLowerCase().includes(query));
   });
-  const withAccess = state.users.filter((item) => item.employeeId).length;
+  const withAccess = state.users.filter((item) => item.employeeId && item.active !== false).length;
   return `<section class="people-page">
-    <header class="people-page-header"><div><span class="eyebrow">DOTACIÓN</span><h1>Personal</h1><p>Directorio operativo, accesos y ubicación del equipo.</p></div><div class="people-page-actions"><span class="people-access-summary"><b>${withAccess}</b> accesos activos</span>${canManage ? `<button class="button primary" data-action="new-user"><span aria-hidden="true">+</span> Agregar persona</button>` : ""}</div></header>
+    <header class="people-page-header"><div><span class="eyebrow">DOTACIÓN</span><h1>Personal</h1><p>Directorio operativo, accesos y ubicación del equipo.</p></div><div class="people-page-actions"><span class="people-access-summary"><b>${withAccess}</b> accesos activos</span>${canManage ? `<button class="button primary" data-action="new-user">${icons.plus} Nuevo acceso</button>` : ""}</div></header>
     <section class="people-toolbar"><label class="search"><span aria-hidden="true">⌕</span><input id="employee-search" placeholder="Buscar por nombre, rol, sector o turno…" value="${employeeSearch}" /></label><span class="people-result-count"><i></i>${rows.length} de ${state.employees.length} personas</span></section>
     ${usersAdminPanel(canManage, rows)}
   </section>`;
@@ -1146,7 +1157,12 @@ function userRows() {
 function usersAdminPanel(canManage, rows = userRows()) {
   return `<section class="people-table-panel"><div class="people-table-label"><div><strong>Directorio del equipo</strong><small>Gestioná los perfiles y accesos desde cada registro.</small></div><span>${rows.length} registros</span></div><div class="people-table-scroll"><table class="people-table"><thead><tr><th>Usuario</th><th>Persona</th><th>Rol empresa</th><th>Ubicación</th><th>Rol sistema</th><th>Gestión</th></tr></thead><tbody>${rows.map(({ user: rowUser, employee }) => {
       const rowId = rowUser?.id || employee?.id || "";
-      return `<tr><td>${rowUser ? `<strong>${escapeHtml(rowUser.username)}</strong>` : `<span class="muted">Sin usuario</span>`}</td><td><div class="person-cell"><span class="avatar">${escapeHtml(employee?.initials || initials(rowUser?.name || rowUser?.username || "?"))}</span><div><strong>${escapeHtml(employee?.name || rowUser?.name || "Sin persona")}</strong><small>${escapeHtml(employee?.phone || "Sin teléfono")}</small></div></div></td><td>${escapeHtml(employee?.role || "Sin rol laboral")}</td><td>${employeeAssignment(employee || {})}</td><td>${rowUser ? escapeHtml(roleLabel[rowUser.role] || rowUser.role) : `<span class="muted">Sin acceso</span>`}</td><td>${canManage ? `<div class="row-actions">${rowUser ? `<button class="row-action" data-action="edit-user" data-id="${rowId}">Editar</button><button class="row-action danger" data-action="delete-user" data-id="${rowId}">Eliminar</button>` : `<button class="row-action" data-action="create-user-for-employee" data-id="${rowId}">Crear acceso</button>`}</div>` : `<span class="muted">Solo lectura</span>`}</td></tr>`;
+      const actions = !canManage ? "" : rowUser
+        ? rowUser.active === false
+          ? `<div class="table-actions"><button class="row-action" data-action="reactivate-user" data-id="${escapeHtml(rowUser.id)}">Reactivar</button></div>`
+          : `<div class="table-actions"><button class="row-action" data-action="edit-user" data-id="${escapeHtml(rowUser.id)}">Editar</button><button class="row-action" data-action="reset-user-password" data-id="${escapeHtml(rowUser.id)}">Restablecer clave</button><button class="row-action danger" data-action="delete-user" data-id="${escapeHtml(rowUser.id)}">Desactivar</button></div>`
+        : employee ? `<button class="row-action" data-action="create-user-for-employee" data-employee-id="${escapeHtml(employee.id)}">Crear acceso</button>` : "";
+      return `<tr class="${rowUser?.active === false ? "is-inactive" : ""}"><td>${rowUser ? `<strong>${escapeHtml(rowUser.username)}</strong>${rowUser.active === false ? `<small class="access-status">Acceso desactivado</small>` : ""}` : `<span class="muted">Sin usuario</span>`}</td><td><div class="person-cell"><span class="avatar">${escapeHtml(employee?.initials || initials(rowUser?.name || rowUser?.username || "?"))}</span><div><strong>${escapeHtml(employee?.name || rowUser?.name || "Sin persona")}</strong><small>${escapeHtml(employee?.phone || "Sin teléfono")}</small></div></div></td><td>${escapeHtml(employee?.role || "Sin rol laboral")}</td><td>${employeeAssignment(employee || {})}</td><td>${rowUser ? escapeHtml(roleLabel[rowUser.role] || rowUser.role) : `<span class="muted">Sin acceso</span>`}</td><td>${actions || `<span class="muted">Sin permisos</span>`}</td></tr>`;
     }).join("")}</tbody></table>${rows.length ? "" : empty("No encontramos usuarios con esa búsqueda")}</div></section>`;
 }
 
@@ -1160,72 +1176,32 @@ function employeeFrancos(employee) {
   return `<details class="francos-details"><summary>${employee.francos.length} fechas cargadas</summary><div>${employee.francos.map((franco) => `<span class="franco-chip ${franco.tipo.toLowerCase()}"><b>${franco.tipo}</b> ${franco.fecha.slice(8, 10)}/${franco.fecha.slice(5, 7)}</span>`).join("")}</div></details>`;
 }
 
-function requestFilterOptions(visibleRequests, admin) {
-  const waitingForMe = visibleRequests.some((request) => request.status === "pendingPartner" && request.partnerEmployeeId === user.employeeId);
-  const waitingFromMe = visibleRequests.some((request) => request.status === "pendingPartner" && request.employeeId === user.employeeId);
-  const waitingDescription = admin
-    ? "Solicitudes esperando respuesta."
-    : waitingForMe
-      ? "Esperando tu respuesta."
-      : waitingFromMe
-        ? "Esperando respuesta del compañero."
-        : "Solicitudes esperando respuesta.";
-  return [
-    { id: "all", icon: "◉", title: "Todas", description: "Ver todas las solicitudes." },
-    { id: "active", icon: "●", title: "En curso", description: "Solicitudes pendientes o en revisión." },
-    { id: "waitingResponse", icon: "↔", title: "Esperando respuesta", description: waitingDescription },
-    { id: "approved", icon: "✓", title: "Aprobadas", description: "Solicitudes confirmadas." },
-    { id: "rejected", icon: "×", title: "Rechazadas", description: "Solicitudes no aprobadas." },
-    { id: "history", icon: "◷", title: "Historial", description: "Registro completo de solicitudes finalizadas." },
-  ].map((option) => ({ ...option, count: visibleRequests.filter((request) => requestMatchesFilter(request, option.id)).length }));
-}
-
-function requestSortValue(request) {
-  return request.revokedAt || request.updatedAt || request.resolvedAt || request.createdAt || request.date || request.id || "";
-}
-
-function sortRequestsForFilter(requests, filter) {
-  if (filter !== "history") return requests;
-  return [...requests].sort((a, b) => String(requestSortValue(b)).localeCompare(String(requestSortValue(a))));
-}
-
-function requestSummaryLine(request) {
-  const impact = request.scheduleImpact || {};
-  const target = impact.target || impact.proposed || impact.original || {};
-  const date = target.date ? formatShortDayMonth(target.date) : "";
-  const shift = target.shift ? `Turno ${target.shift}` : "";
-  return [date, shift].filter(Boolean).join(" · ") || request.detail || "Sin fecha definida";
-}
-
-function formatShortDayMonth(value) {
-  if (!value || !/^\d{4}-\d{2}-\d{2}/.test(value)) return value || "";
-  const [year, month, day] = value.slice(0, 10).split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return new Intl.DateTimeFormat("es-AR", { day: "numeric", month: "short", timeZone: "UTC" }).format(date).replace(".", "");
-}
-
 function requestsPage() {
   const admin = isAdminRole(user.role);
   const visibleRequests = (admin ? state.requests : state.requests.filter((r) => r.employeeId === user.employeeId || r.partnerEmployeeId === user.employeeId)).map(normalizeRequestForView);
-  const filters = requestFilterOptions(visibleRequests, admin);
-  if (!filters.some((filter) => filter.id === requestFilter)) requestFilter = "all";
-  const filtered = sortRequestsForFilter(visibleRequests.filter((request) => requestMatchesFilter(request, requestFilter)), requestFilter);
-  return `${pageHeading("GESTIÓN", admin ? "Solicitudes" : "Mis solicitudes", admin ? "Revisá y resolvé los pedidos del equipo." : "", `<button class="button primary" data-action="new-request">${icons.plus} Nueva solicitud</button>`)}
-    <section class="requests-layout">
+  const filtered = visibleRequests.filter((request) => requestMatchesFilter(request, requestFilter));
+  const filters = [
+    ["all", "Todas", "◉"],
+    ["active", "En curso", "●"],
+    ["waitingResponse", "Esperando respuesta", "↔"],
+    ["approved", "Aprobadas", "✓"],
+    ["rejected", "Rechazadas", "×"],
+    ["history", "Historial", "◷"],
+  ];
+  return `${pageHeading("GESTIÓN", admin ? "Solicitudes" : "Mis solicitudes", admin ? "Revisá y resolvé los pedidos del equipo." : "Creá pedidos y seguí su resolución.", `<button class="button primary" data-action="new-request">${icons.plus} Nueva solicitud</button>`)}
+    <div class="requests-layout">
       <aside class="request-filter-panel" aria-label="Filtros de solicitudes">
         <h2>Filtros</h2>
-        <div class="request-filter-list">${filters.map((filter) => `<button class="request-filter-card ${requestFilter === filter.id ? "active" : ""}" data-action="filter-request" data-filter="${filter.id}"><span class="request-filter-icon">${filter.icon}</span><span><strong>${escapeHtml(filter.title)}</strong></span><b>${filter.count}</b></button>`).join("")}</div>
+        <div class="request-filter-list">${filters.map(([id, label, icon]) => `<button class="request-filter-card ${requestFilter === id ? "active" : ""}" data-action="filter-request" data-filter="${id}" ${requestFilter === id ? 'aria-pressed="true"' : 'aria-pressed="false"'}><span class="request-filter-icon" aria-hidden="true">${icon}</span><span><strong>${label}</strong></span><b>${visibleRequests.filter((request) => requestMatchesFilter(request, id)).length}</b></button>`).join("")}</div>
       </aside>
-      <section class="request-results-panel">
-        <div class="request-results-head"><span>${escapeHtml(filters.find((filter) => filter.id === requestFilter)?.title || "Solicitudes")}</span><b>${filtered.length}</b></div>
-        <div class="request-cards">${filtered.map((r) => requestCard(r, admin)).join("") || empty("No hay solicitudes en este filtro")}</div>
-      </section>
-    </section>`;
+      <section class="request-results-panel" aria-live="polite"><header class="request-results-head"><span>${filters.find(([id]) => id === requestFilter)?.[1] || "Solicitudes"}</span><b>${filtered.length}</b></header><div class="request-cards">${filtered.map((r) => requestCard(r, admin)).join("") || empty("No hay solicitudes en este estado")}</div></section>
+    </div>`;
 }
 
 function requestCard(r, admin) {
   const request = normalizeRequestForView(r);
-  return `<article class="request-card"><div class="request-card-top"><span class="request-icon large">${request.type === "absence" ? "+" : "↔"}</span><div><span class="request-id">${escapeHtml(request.id)}</span><h3>${escapeHtml(requestTypes[request.type] || request.type)}</h3><p>${escapeHtml(request.detail)}</p></div></div><div class="request-card-status"><span class="badge ${request.status}">${escapeHtml(statusText[request.status] || request.status)}</span>${admin && canManagerResolveRequest(request) ? `<small>Requiere revisión</small>` : ""}</div><p class="request-card-summary">${escapeHtml(requestSummaryLine(request))}</p><div class="card-actions"><button class="text-link" data-action="view-request" data-id="${request.id}">Ver detalle →</button></div></article>`;
+  const meta = requestMetaItems(request);
+  return `<article class="request-card"><div class="request-card-top"><span class="request-icon large">${request.type === "absence" ? "+" : "↔"}</span><div><span class="request-id">${escapeHtml(request.id)}</span><h3>${escapeHtml(requestTypes[request.type] || request.type)}</h3><p>${escapeHtml(request.detail)}</p></div><span class="badge ${request.status}">${escapeHtml(statusText[request.status] || request.status)}</span></div><div class="request-meta"><span><small>SOLICITANTE</small><strong>${escapeHtml(request.employee)}</strong></span>${meta.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join("")}</div><div class="card-actions"><button class="button secondary" data-action="view-request" data-id="${request.id}">Ver detalle</button>${admin && canManagerResolveRequest(request) ? `<span class="muted">Requiere revisión</span>` : ""}</div></article>`;
 }
 
 function notificationsPage() {
@@ -1236,12 +1212,40 @@ function notificationsPage() {
 function auditPage() {
   if (!canSeeAudit(user.role)) return dashboardPage();
   return `${pageHeading("TRAZABILIDAD", "Auditoría", "Registro de las acciones relevantes del sistema.")}
-    <section class="table-card"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Elemento</th><th>Resultado</th></tr></thead><tbody>${state.auditLogs.map((a) => `<tr><td>${escapeHtml(a.time)}</td><td><strong>${escapeHtml(a.user)}</strong></td><td>${escapeHtml(a.action)}</td><td><span class="sector-pill">${escapeHtml(a.entity)}</span></td><td><span class="badge active">${escapeHtml(a.result)}</span></td></tr>`).join("")}</tbody></table></section>
-    <button class="reset-link" data-action="reset-demo">Restablecer datos iniciales</button>`;
+    <section class="table-card"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Elemento</th><th>Resultado</th></tr></thead><tbody>${state.auditLogs.map((a) => `<tr><td>${escapeHtml(a.time)}</td><td><strong>${escapeHtml(a.user)}</strong></td><td>${escapeHtml(a.action)}</td><td><span class="sector-pill">${escapeHtml(a.entity)}</span></td><td><span class="badge active">${escapeHtml(a.result)}</span></td></tr>`).join("")}</tbody></table></section>`;
 }
 
-function modal(content, variant = "") {
-  document.body.insertAdjacentHTML("beforeend", `<div class="modal-backdrop ${variant ? `${variant}-backdrop` : ""}" data-action="close-modal"><section class="modal ${variant}" role="dialog" aria-modal="true">${content}</section></div>`);
+function modal(content, variant = "", label = "Diálogo") {
+  openModal(content, variant, label, escapeHtml);
+}
+
+function closeModal() {
+  closeModalUi();
+}
+
+function busyModal(title, message) {
+  modal(`<div class="busy-dialog" role="status" aria-live="assertive"><span class="spinner" aria-hidden="true"></span><div><h2>${escapeHtml(title)}</h2><p class="muted">${escapeHtml(message)}</p></div></div>`, "busy-modal", title);
+}
+
+function loginErrorModal(message) {
+  modal(`<span class="dialog-icon error" aria-hidden="true">!</span><span class="eyebrow">NO PUDIMOS INGRESAR</span><h2>Revisá tus datos</h2><p class="muted">${escapeHtml(message)}</p><div class="modal-actions"><button class="button primary" data-action="close-login-error" autofocus>Reintentar</button></div>`, "error-modal", "Error de inicio de sesión");
+}
+
+function logoutConfirmationModal() {
+  modal(`<span class="dialog-icon" aria-hidden="true">↪</span><span class="eyebrow">CERRAR SESIÓN</span><h2>¿Querés salir de Uzumaki?</h2><p class="muted">Tendrás que ingresar nuevamente para consultar la operación.</p><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button type="button" class="button danger-soft" data-action="perform-logout">Cerrar sesión</button></div>`, "confirm-modal", "Confirmar cierre de sesión");
+}
+
+function accountSessionModal() {
+  modal(`<button class="modal-close" data-action="close-modal" aria-label="Cerrar">×</button><span class="eyebrow">MI CUENTA</span><h2>${escapeHtml(user.name)}</h2><p class="muted">${escapeHtml(roleLabel[user.role])} · ${escapeHtml(user.username)}</p><div class="account-session-actions"><button type="button" class="account-session-action" data-action="open-own-password-change"><span class="account-session-icon" aria-hidden="true">⌁</span><span><strong>Cambiar contraseña</strong><small>Actualizá tu clave de acceso.</small></span><span aria-hidden="true">›</span></button><button type="button" class="account-session-action account-session-action--logout" data-action="open-logout-confirmation"><span class="account-session-icon" aria-hidden="true">↪</span><span><strong>Cerrar sesión</strong><small>Salir de este dispositivo.</small></span><span aria-hidden="true">›</span></button></div>`, "account-modal", "Opciones de cuenta");
+}
+
+function ownPasswordChangeModal() {
+  modal(`<button class="modal-close" data-action="close-modal" aria-label="Cerrar">×</button><span class="eyebrow">SEGURIDAD DE LA CUENTA</span><h2>Cambiar contraseña</h2><p class="muted">Confirmá tu contraseña actual y definí una nueva para proteger tu acceso.</p><form id="own-password-change-form"><label>Contraseña actual<input name="currentPassword" type="password" autocomplete="current-password" required autofocus /></label><label>Nueva contraseña<input name="newPassword" type="password" minlength="10" autocomplete="new-password" required /></label><label>Confirmar nueva contraseña<input name="confirmPassword" type="password" minlength="10" autocomplete="new-password" required /></label><div class="week-form-note"><strong>Sesiones protegidas</strong><p>Usá al menos 10 caracteres. Al guardar se cerrarán las otras sesiones activas de tu cuenta.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="open-account-session">Volver</button><button class="button primary">Guardar contraseña</button></div></form>`, "account-modal", "Cambiar contraseña");
+}
+
+function clearClientSession() {
+  clearCachedState();
+  [SESSION_KEY, "uzumaki-user-v4", "uzumaki-user-v3", "uzumaki-user-v2", "uzumaki-user", "turnia-user"].forEach((key) => sessionStorage.removeItem(key));
 }
 
 function exportStateJson() {
@@ -1320,9 +1324,7 @@ function requestDetailModal(requestId) {
   const managerActions = canManagerResolveRequest(request)
     ? `<button class="button danger-soft" data-action="resolve" data-id="${request.id}" data-status="rejected">Rechazar</button><button class="button primary" data-action="resolve" data-id="${request.id}" data-status="approved">Aprobar</button>`
     : "";
-  const revokeAction = canRevokeRequest(request)
-    ? `<button class="button danger-soft" data-action="open-revoke-request" data-id="${request.id}">Revocar aprobación</button>`
-    : "";
+  const revokeAction = "";
   modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">SOLICITUD</span><h2>${escapeHtml(request.id)}</h2><p class="muted">Detalle completo para revisión. Las licencias y ausencias aprobadas se aplican automáticamente con el reemplazo elegido.</p><div class="request-meta request-detail">${rows.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join("")}</div>${requestImpactPreview(request)}<div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cerrar</button>${partnerActions}${managerActions}${revokeAction}</div>`);
 }
 
@@ -1363,12 +1365,13 @@ function floorSelectOptions(selected = "") {
 }
 
 function systemRoleSelectOptions(selected = "staff") {
-  return selectOptions([
+  const options = [
     { value: "staff", label: "Personal operativo" },
     { value: "manager", label: "Encargada" },
     { value: "supervisor", label: "Supervisión" },
     { value: "admin", label: "Administración principal" },
-  ], selected);
+  ];
+  return selectOptions(user?.role === "manager" ? options.filter((item) => ["staff", "supervisor"].includes(item.value)) : options, selected);
 }
 
 function newUserModal() {
@@ -1394,7 +1397,6 @@ function userModal(targetUser = null, linkedEmployee = null) {
   const employee = targetUser ? state.employees.find((item) => item.id === targetUser.employeeId) : linkedEmployee;
   const isEditing = Boolean(targetUser);
   const username = targetUser?.username || (employee ? slugify(employee.name).split("-")[0] : "");
-  const password = "";
   const name = employee?.name || targetUser?.name || "";
   const companyRole = employee?.role || companyRoleOptions[0];
   const systemRole = targetUser?.role || "staff";
@@ -1402,7 +1404,18 @@ function userModal(targetUser = null, linkedEmployee = null) {
   const turno = employee?.turno || "";
   const piso = employee?.piso || "";
   const phone = employee?.phone || "";
-  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">${isEditing ? "EDITAR USUARIO" : "NUEVO USUARIO"}</span><h2>${isEditing ? "Editar usuario" : "Agregar usuario"}</h2><p class="muted">${isEditing ? "Los cambios actualizan datos laborales. Dejá la contraseña vacía para conservarla." : "Se crea el acceso a la app con sus datos laborales en una sola operación."}</p><form id="user-form"><input type="hidden" name="userId" value="${escapeHtml(targetUser?.id || "")}" /><input type="hidden" name="employeeId" value="${escapeHtml(employee?.id || "")}" /><div class="form-row"><label>Usuario<input name="username" autocomplete="off" value="${escapeHtml(username)}" required /></label><label>Contraseña<input name="password" type="password" value="${escapeHtml(password)}" ${isEditing ? 'placeholder="Sin cambios"' : "required"} /></label></div><label>Nombre completo<input name="name" value="${escapeHtml(name)}" required /></label><div class="form-row"><label>Rol del sistema<select name="systemRole" required>${systemRoleSelectOptions(systemRole)}</select></label><label>Rol dentro de la empresa<select name="companyRole" required>${companyRoleSelectOptions(companyRole)}</select></label></div><div class="form-row"><label>Sector<select name="sector">${sectorSelectOptions(sector)}</select></label><label>Turno<select name="turno">${shiftSelectOptions(turno)}</select></label></div><div class="form-row"><label>Piso<select name="piso">${floorSelectOptions(piso)}</select></label><label>Teléfono<input name="phone" value="${escapeHtml(phone)}" /></label></div><div class="week-form-note"><strong>Roles separados</strong><p>El rol del sistema define permisos. El rol dentro de la empresa define la función laboral y cómo aparece en grilla.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${isEditing ? "Guardar cambios" : "Guardar usuario"}</button></div></form>`);
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">${isEditing ? "EDITAR USUARIO" : "NUEVO USUARIO"}</span><h2>${isEditing ? "Editar usuario" : "Agregar usuario"}</h2><p class="muted">${isEditing ? "Los datos del perfil y el acceso se administran por separado." : "Se crea el acceso a la app con sus datos laborales en una sola operación."}</p><form id="user-form"><input type="hidden" name="userId" value="${escapeHtml(targetUser?.id || "")}" /><input type="hidden" name="employeeId" value="${escapeHtml(employee?.id || "")}" /><div class="form-row"><label>Usuario<input name="username" autocomplete="off" value="${escapeHtml(username)}" required /></label>${isEditing ? "" : `<label>Contraseña inicial<input name="password" type="password" minlength="10" autocomplete="new-password" required /></label>`}</div><label>Nombre completo<input name="name" value="${escapeHtml(name)}" required /></label><div class="form-row"><label>Rol del sistema<select name="systemRole" required>${systemRoleSelectOptions(systemRole)}</select></label><label>Rol dentro de la empresa<select name="companyRole" required>${companyRoleSelectOptions(companyRole)}</select></label></div><div class="form-row"><label>Sector<select name="sector">${sectorSelectOptions(sector)}</select></label><label>Turno<select name="turno">${shiftSelectOptions(turno)}</select></label></div><div class="form-row"><label>Piso<select name="piso">${floorSelectOptions(piso)}</select></label><label>Teléfono<input name="phone" value="${escapeHtml(phone)}" /></label></div><div class="week-form-note"><strong>Roles y acceso separados</strong><p>El rol del sistema define permisos. Para restablecer una contraseña usá la acción específica desde el directorio.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${isEditing ? "Guardar cambios" : "Guardar usuario"}</button></div></form>`);
+}
+
+function resetUserPasswordModal(userId) {
+  if (!canManageEmployees(user.role)) return toast("Solo Administración y Encargada pueden restablecer accesos.", "error");
+  const targetUser = state.users.find((item) => item.id === userId);
+  if (!targetUser) return toast("No se encontró el usuario.", "error");
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">RESTABLECER ACCESO</span><h2>${escapeHtml(targetUser.name || targetUser.username)}</h2><p class="muted">Definí una contraseña temporal. Se cerrarán sus sesiones y deberá crear una nueva al ingresar.</p><form id="reset-user-password-form"><input type="hidden" name="userId" value="${escapeHtml(targetUser.id)}" /><label>Contraseña temporal<input name="newPassword" type="password" minlength="10" autocomplete="new-password" required autofocus /></label><label>Confirmar contraseña<input name="confirmPassword" type="password" minlength="10" autocomplete="new-password" required /></label><label>Motivo <small class="muted">(opcional, quedará auditado)</small><textarea name="reason" rows="2" maxlength="240" placeholder="Ej.: restablecimiento solicitado por la persona"></textarea></label><div class="week-form-note"><strong>Acción sensible</strong><p>La contraseña no se registra ni se vuelve a mostrar en la aplicación.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button danger-soft">Restablecer acceso</button></div></form>`);
+}
+
+function forcePasswordChangeModal() {
+  modal(`<span class="eyebrow">SEGURIDAD DE LA CUENTA</span><h2>Creá tu nueva contraseña</h2><p class="muted">Tu acceso fue restablecido. Para continuar necesitás reemplazar la contraseña temporal.</p><form id="force-password-change-form"><label>Contraseña temporal<input name="currentPassword" type="password" autocomplete="current-password" required autofocus /></label><label>Nueva contraseña<input name="newPassword" type="password" minlength="10" autocomplete="new-password" required /></label><label>Confirmar nueva contraseña<input name="confirmPassword" type="password" minlength="10" autocomplete="new-password" required /></label><div class="week-form-note"><strong>Requisito mínimo</strong><p>Usá al menos 10 caracteres. Al guardar se cerrarán las otras sesiones de tu cuenta.</p></div><div class="modal-actions"><button class="button primary">Guardar y continuar</button></div></form>`, "mandatory-modal", "Cambio obligatorio de contraseña");
 }
 
 function newPlanningWeekModal() {
@@ -1476,7 +1489,6 @@ function updateExceptionAffectedEmployee(form) {
   affectedSelect.value = assignment?.employeeId || "unassigned";
 }
 
-function closeModal() { document.querySelector(".modal-backdrop")?.remove(); }
 function initials(name) { return name.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase(); }
 function slugify(value) { return String(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""); }
 function uniqueId(prefix, seed, collection) {
@@ -1517,6 +1529,7 @@ function systemRoleFor(role, participaEnOperacion) {
   return participaEnOperacion ? "Personal" : "Administrativo";
 }
 function formatIsoDate(value) { const [year, month, day] = value.split("-"); return `${day}/${month}/${year}`; }
+function localIsoDate(date = new Date()) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
 function addIsoDays(value, amount) {
   const [year, month, day] = value.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day + amount));
@@ -1545,7 +1558,12 @@ function hasSameDayAssignment(week, position, employeeId) {
 function unreadCount() { return state.notifications.filter((n) => !n.read).length; }
 function empty(message) { return `<div class="empty-state"><span>◇</span><p>${message}</p></div>`; }
 
-async function loginAsDemoUser(match) {
+function waitForPaint() {
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+async function loginAsDemoUser(match, options = {}) {
+  const { promptPasswordChange = true } = options;
   user = match;
   sessionStorage.setItem(SESSION_KEY, JSON.stringify(user));
   sessionStorage.removeItem("uzumaki-user-v3");
@@ -1553,8 +1571,9 @@ async function loginAsDemoUser(match) {
   sessionStorage.removeItem("uzumaki-user");
   sessionStorage.removeItem("turnia-user");
   page = "dashboard";
-  state = await loadState();
+  state = match.mustChangePassword ? await loadState({ remote: false }) : await loadState();
   render();
+  if (promptPasswordChange && match.mustChangePassword) forcePasswordChangeModal();
 }
 
 document.addEventListener("submit", async (event) => {
@@ -1562,11 +1581,22 @@ document.addEventListener("submit", async (event) => {
   if (event.target.id === "login-form") {
     const data = new FormData(event.target);
     const username = data.get("username").trim().toLowerCase();
+    const submit = event.target.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    event.target.querySelectorAll("input").forEach((input) => { input.disabled = true; });
+    busyModal("Ingresando", "Estamos validando tu acceso.");
     try {
       const match = await authenticate(username, data.get("password"));
-      return loginAsDemoUser(match);
+      await loginAsDemoUser(match, { promptPasswordChange: false });
+      await waitForPaint();
+      closeModal();
+      if (match.mustChangePassword) forcePasswordChangeModal();
+      return undefined;
     } catch (error) {
-      return renderLogin(error.message || "Usuario o contraseña incorrectos.");
+      closeModal();
+      renderLogin("", username);
+      loginErrorModal(error.message || "Usuario o contraseña incorrectos.");
+      return undefined;
     }
   }
   if (event.target.id === "request-form") {
@@ -1594,11 +1624,11 @@ document.addEventListener("submit", async (event) => {
       ? `${formatIsoDate(scheduleImpact.original.date)} ${scheduleImpact.original.shift} → ${formatIsoDate(scheduleImpact.proposed.date)} ${scheduleImpact.proposed.shift}`
       : `${formatIsoDate(scheduleImpact.target.date)} · ${scheduleImpact.target.shift}`;
     const status = isChange ? "pendingPartner" : "pendingManager";
-    const request = { id: `SOL-${String(25 + state.requests.length).padStart(3, "0")}`, employee: employee.name, employeeId: employee.id, type, detail, date: "Ahora", status, note, requiresPartner: isChange, partnerEmployeeId, partnerStatus: isChange ? "pending" : "", scheduleImpact };
-    state.requests.unshift(request);
-    state.notifications.unshift({ id: crypto.randomUUID(), title: "Solicitud enviada", text: `${requestTypes[request.type]}: ${request.detail}.`, time: "Ahora", type: "request", read: false });
-    audit("Creó una solicitud", request.id, statusText[request.status]);
-    closeModal(); persist(); toast("Solicitud enviada correctamente");
+    try {
+      await apiCommand("/api/requests", { type, note, partnerEmployeeId, scheduleImpact });
+      closeModal();
+      toast("Solicitud enviada correctamente");
+    } catch (error) { toast(error.message, "error"); }
   }
   if (event.target.id === "request-revoke-form") {
     const data = new FormData(event.target);
@@ -1607,36 +1637,12 @@ document.addEventListener("submit", async (event) => {
     const reason = data.get("reason").trim();
     if (!request || !canRevokeRequest(normalizedRequest)) return toast("No se puede revocar esta solicitud.", "error");
     if (!reason) return toast("Indicá un motivo de revocación.", "error");
-    if (!confirm("¿Confirmás la revocación? El sistema intentará revertir la grilla solo si es seguro.")) return;
-    const revokedBy = { id: user.id || user.username, name: user.name, role: user.role };
-    const revocation = revokePlanningApplication({
-      week: state.planningWeek,
-      request: normalizedRequest,
-      revokedBy,
-      reason,
-      now: () => new Date().toISOString(),
-    });
-    if (!revocation.ok) return toast(revocation.message, "error");
-    const revokedAt = revocation.trace?.revokedAt || new Date().toISOString();
-    request.status = "revoked";
-    request.revokedAt = revokedAt;
-    request.revokedBy = revokedBy;
-    request.revocationReason = reason;
-    request.revocationApplication = {
-      ...revocation.trace,
-      sourceRequestId: request.id,
-      revokedChangeType: normalizedRequest.type,
-      revokedBy,
-      revokedAt,
-      reason,
-      automatic: revocation.reverted,
-      requiresManualReview: revocation.requiresManualReview,
-      message: revocation.message,
-    };
-    audit("Revocó una solicitud aprobada", request.id, revocation.requiresManualReview ? "Revisión manual requerida" : "Reversión automática aplicada");
-    closeModal();
-    persist();
-    toast(revocation.requiresManualReview ? "No se pudo revertir automáticamente. Revisar la grilla manualmente." : "Solicitud revocada y grilla revertida");
+    if (!confirm("¿Confirmás la revocación? Las solicitudes aprobadas quedarán marcadas para revisión operativa.")) return;
+    try {
+      const result = await apiCommand(`/api/requests/${encodeURIComponent(request.id)}/revoke`, { reason });
+      closeModal();
+      toast(result.requiresManualReview ? "Solicitud revocada: revisá el impacto en la grilla." : "Solicitud revocada");
+    } catch (error) { toast(error.message, "error"); }
   }
   if (event.target.id === "planning-week-form") {
     if (!canEditSchedule(user.role)) return;
@@ -1646,21 +1652,12 @@ document.addEventListener("submit", async (event) => {
     const endDate = addIsoDays(startDate, 6);
     if (!name) return toast("Ingresá un nombre para la semana.", "error");
     if (data.get("endDate") && data.get("endDate") !== endDate) return toast("La semana debe durar exactamente 7 días.", "error");
-    if (state.planningWeek) {
-      if (!confirm("La grilla que estás editando se guardará en el historial antes de crear una nueva.")) return;
-      state.planningWeek.savedAt = state.planningWeek.savedAt || new Date().toISOString();
-      state.planningWeek.savedBy = state.planningWeek.savedBy || { id: user.id || user.username, name: user.name, role: user.role };
-      state.planningWeek.updatedAt = new Date().toISOString();
-      storePlanningWeekSnapshot(state.planningWeek);
-    }
-    state.planningWeek = createDraftPlanningWeek({
-      id: crypto.randomUUID(),
-      name,
-      startDate,
-      endDate,
-    });
-    planningView = "editor";
-    closeModal(); persistPlanningWeekLifecycle(state.planningWeek); toast("Semana creada como borrador");
+    try {
+      await apiCommand("/api/planning/weeks", { name, startDate });
+      planningView = "editor";
+      closeModal();
+      toast("Semana creada como borrador");
+    } catch (error) { toast(error.message, "error"); }
   }
   if (event.target.id === "position-assignment-form") {
     const week = state.planningWeek;
@@ -1672,10 +1669,11 @@ document.addEventListener("submit", async (event) => {
     const employee = state.employees.find((item) => item.id === employeeId && item.status === "active" && item.participaEnOperacion !== false);
     if (!position || !employee) return toast("No se pudo guardar la asignación.", "error");
     if (hasSameDayAssignment(week, position, employeeId)) return toast(`${employee.name} ya está asignado ese día.`, "error");
-    const existingAssignment = week.assignments.find((item) => item.positionId === positionId);
-    if (existingAssignment) existingAssignment.employeeId = employeeId;
-    else week.assignments.push({ id: crypto.randomUUID(), positionId, employeeId });
-    closeModal(); persistPlanningWeekLifecycle(week); toast(`${employee.name} fue asignado al puesto`);
+    try {
+      await apiCommand("/api/planning/assignments", { weekId: week.id, positionId, employeeId, version: week.version });
+      closeModal();
+      toast(`${employee.name} fue asignado al puesto`);
+    } catch (error) { toast(error.message, "error"); }
   }
   if (event.target.id === "planning-day-off-form") {
     const week = state.planningWeek;
@@ -1687,11 +1685,11 @@ document.addEventListener("submit", async (event) => {
     const tipo = data.get("tipo");
     const employee = state.employees.find((item) => item.id === employeeId && item.status === "active" && item.participaEnOperacion !== false && item.sector === sector);
     if (!["Cocina", "Pisos"].includes(sector) || !["F1", "F2"].includes(tipo) || !employee) return toast("No se pudo guardar el franco.", "error");
-    if (!Array.isArray(week.daysOff)) week.daysOff = [];
-    const existingDayOff = week.daysOff.find((item) => item.date === date && item.sector === sector && item.employeeId === employeeId);
-    if (existingDayOff) existingDayOff.tipo = tipo;
-    else week.daysOff.push({ id: crypto.randomUUID(), date, sector, employeeId, tipo });
-    closeModal(); persistPlanningWeekLifecycle(week); toast(`Franco ${tipo} cargado para ${employee.name}`);
+    try {
+      await apiCommand("/api/planning/days-off", { weekId: week.id, employeeId, date, sectorId: employee.sectorId, type: tipo, version: week.version });
+      closeModal();
+      toast(`Franco ${tipo} cargado para ${employee.name}`);
+    } catch (error) { toast(error.message, "error"); }
   }
   if (event.target.id === "week-exception-form") {
     const week = state.planningWeek;
@@ -1705,29 +1703,17 @@ document.addEventListener("submit", async (event) => {
     if (!position || position.date !== data.get("date") || position.shift !== data.get("shift") || !exceptionTypes[type]) return toast("No se pudo guardar la excepción.", "error");
     if (affectedEmployeeId && !state.employees.some((employee) => employee.id === affectedEmployeeId)) return toast("La persona afectada no es válida.", "error");
     if (coverEmployeeId && !state.employees.some((employee) => employee.id === coverEmployeeId)) return toast("La cobertura indicada no es válida.", "error");
-    if (!Array.isArray(week.exceptions)) week.exceptions = [];
     const note = data.get("note").trim();
-    const payload = {
-      positionId: position.id,
-      date: position.date,
-      shift: position.shift,
-      sector: position.sector,
-      affectedEmployeeId,
-      type,
-      coverEmployeeId,
-      note,
-      updatedAt: new Date().toISOString(),
-      updatedBy: { id: user.id || user.username, name: user.name, role: user.role },
-    };
     const existing = week.exceptions.find((item) => item.id === exceptionId);
-    if (existing) Object.assign(existing, payload);
-    else week.exceptions.push({ id: crypto.randomUUID(), ...payload, createdAt: payload.updatedAt });
-    audit(existing ? "Editó una excepción semanal" : "Registró una excepción semanal", `${formatIsoDate(position.date)} · ${position.label}`, exceptionTypes[type]);
-    closeModal(); persistPlanningWeekLifecycle(week); toast(existing ? "Excepción actualizada" : "Excepción registrada");
+    try {
+      await apiCommand("/api/planning/exceptions", { id: exceptionId || undefined, weekId: week.id, positionId: position.id, affectedEmployeeId, coverEmployeeId, type, note, version: week.version });
+      closeModal(); toast(existing ? "Excepción actualizada" : "Excepción registrada");
+    } catch (error) { toast(error.message, "error"); }
   }
   if (event.target.id === "user-form") {
     if (!canManageEmployees(user.role)) return toast("Solo una encargada puede crear usuarios.", "error");
     const data = new FormData(event.target);
+    const submit = event.target.querySelector('button[type="submit"], .modal-actions .button.primary');
     const userId = data.get("userId");
     const employeeId = data.get("employeeId");
     const username = data.get("username").trim().toLowerCase();
@@ -1739,52 +1725,45 @@ document.addEventListener("submit", async (event) => {
     const turno = data.get("turno");
     const participaEnOperacion = operationalCompanyRoles.includes(companyRole);
     if (!username || (!userId && !password) || !name || !role || !companyRole) return toast("Completá usuario, contraseña, nombre y roles.", "error");
-    if (state.users.some((item) => item.username === username && item.id !== userId)) return toast("Ese usuario ya existe.", "error");
-    const existingUser = userId ? state.users.find((item) => item.id === userId) : null;
-    let employee = employeeId ? state.employees.find((item) => item.id === employeeId) : null;
-    if (!employee) {
-      employee = {
-        id: uniqueId("emp", name, state.employees),
-        status: "active",
-        francos: [],
-        createdFromUser: username,
-      };
-      state.employees.push(employee);
+    try {
+      if (submit) submit.disabled = true;
+      const payload = { username, password, name, systemRole: role, companyRole, sector, turno, piso: data.get("piso") || null, phone: data.get("phone").trim(), employeeId };
+      if (userId) delete payload.password;
+      await apiCommand(userId ? `/api/users/${encodeURIComponent(userId)}/profile` : "/api/users", payload);
+      closeModal();
+      toast(userId ? "Usuario actualizado" : "Usuario creado");
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      toast(error.message, "error");
     }
-    Object.assign(employee, {
-      name,
-      initials: initials(name),
-      role: companyRole,
-      roleId: roleIdFor(companyRole),
-      sector: sector || null,
-      sectorId: sectorIdFor(sector),
-      turno: turno || null,
-      turnoId: turnoIdFor(turno),
-      piso: data.get("piso") ? Number(data.get("piso")) : null,
-      phone: data.get("phone").trim(),
-      status: employee.status || "active",
-      systemRole: systemRoleFor(companyRole, participaEnOperacion),
-      participaEnOperacion,
-      francos: Array.isArray(employee.francos) ? employee.francos : [],
-    });
-    const savedUser = existingUser || {
-      id: uniqueId("user", username, state.users),
-      employeeId: employee.id,
-    };
-    Object.assign(savedUser, {
-      username,
-      name,
-      role,
-      employeeId: employee.id,
-    });
-    if (password) savedUser.password = password;
-    if (!existingUser) state.users.push(savedUser);
-    if (userId && (savedUser.id === user.id || savedUser.username === user.username)) {
-      user = savedUser;
+  }
+  if (event.target.id === "reset-user-password-form") {
+    const data = new FormData(event.target);
+    const newPassword = String(data.get("newPassword") || "");
+    if (newPassword !== data.get("confirmPassword")) return toast("Las contraseñas no coinciden.", "error");
+    try {
+      await apiCommand(`/api/users/${encodeURIComponent(data.get("userId"))}/reset-password`, { newPassword, reason: String(data.get("reason") || "") });
+      closeModal();
+      toast("Acceso restablecido: deberá cambiar la contraseña al ingresar.");
+    } catch (error) { toast(error.message, "error"); }
+  }
+  if (["force-password-change-form", "own-password-change-form"].includes(event.target.id)) {
+    const data = new FormData(event.target);
+    const newPassword = String(data.get("newPassword") || "");
+    if (newPassword !== data.get("confirmPassword")) return toast("Las contraseñas no coinciden.", "error");
+    const submit = event.target.querySelector('button[type="submit"], .modal-actions .button.primary');
+    try {
+      if (submit) submit.disabled = true;
+      await apiCommand("/api/me/change-password", { currentPassword: String(data.get("currentPassword") || ""), newPassword }, "POST", {}, false);
+      user = { ...user, mustChangePassword: false };
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(user));
+      closeModal();
+      render();
+      toast("Contraseña actualizada. Las demás sesiones se cerraron.");
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      toast(error.message, "error");
     }
-    audit(existingUser ? "Editó un usuario y sus datos laborales" : "Creó un usuario y sus datos laborales", username, `${roleLabel[role] || role} · ${companyRole}`);
-    closeModal(); persist(); toast(existingUser ? "Usuario actualizado en la base JSON" : "Usuario y datos laborales guardados en la base JSON");
   }
 });
 
@@ -1803,6 +1782,11 @@ document.addEventListener("input", (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target.matches('[data-action="planning-focus-employee"]')) {
+    planningFocusedEmployeeId = event.target.value || null;
+    render();
+    return;
+  }
   if (event.target.name === "planning-week-selection") {
     if (!canEditSchedule(user.role)) return;
     if (event.target.checked) selectedPlanningWeekIds.add(event.target.value);
@@ -1828,7 +1812,7 @@ document.addEventListener("change", (event) => {
   }
 });
 
-document.addEventListener("click", (event) => {
+document.addEventListener("click", async (event) => {
   const sidebarToggle = event.target.closest('[data-action="toggle-sidebar"]');
   if (sidebarToggle) {
     sidebarCollapsed = !sidebarCollapsed;
@@ -1841,19 +1825,55 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]"); if (!button) return;
   const action = button.dataset.action;
   if (action === "toggle-password") { const input = document.querySelector('input[name="password"]'); input.type = input.type === "password" ? "text" : "password"; button.textContent = input.type === "password" ? "Ver" : "Ocultar"; }
-  if (action === "logout") { endSession(); user = null; sessionStorage.removeItem(SESSION_KEY); sessionStorage.removeItem("uzumaki-user-v4"); sessionStorage.removeItem("uzumaki-user-v3"); sessionStorage.removeItem("uzumaki-user-v2"); sessionStorage.removeItem("uzumaki-user"); sessionStorage.removeItem("turnia-user"); render(); }
+  if (action === "confirm-logout") accountSessionModal();
+  if (action === "open-account-session") { closeModal(); accountSessionModal(); }
+  if (action === "open-own-password-change") { closeModal(); ownPasswordChangeModal(); }
+  if (action === "open-logout-confirmation") { closeModal(); logoutConfirmationModal(); }
+  if (action === "logout") logoutConfirmationModal();
+  if (action === "close-login-error") {
+    closeModal();
+    requestAnimationFrame(() => {
+      const passwordInput = document.querySelector('input[name="password"]');
+      passwordInput?.focus();
+      passwordInput?.select?.();
+    });
+    return;
+  }
+  if (action === "perform-logout") {
+    closeModal();
+    busyModal("Cerrando sesión", "Estamos protegiendo tu sesión.");
+    try {
+      await endSession();
+      user = null;
+      clearClientSession();
+      closeModal();
+      renderLogin();
+    } catch (error) {
+      closeModal();
+      toast(error.message || "No se pudo cerrar la sesión.", "error");
+    }
+  }
   if (action === "menu") document.querySelector("#sidebar")?.classList.toggle("open");
-  if (action === "export-state-json") exportStateJson();
-  if (action === "import-state-json") importStateJson();
-  if (action === "toggle-schedule") { scheduleMode = scheduleMode === "official" ? "draft" : "official"; render(); }
-  if (action === "cycle-shift") { const item = state.draft.find((s) => s.id === button.dataset.id); const states = ["working", "off", "sick", "leave"]; item.state = states[(states.indexOf(item.state) + 1) % states.length]; state.hasDraftChanges = true; persist(); }
-  if (action === "publish") { state.schedule = structuredClone(state.draft); state.scheduleVersion += 1; state.hasDraftChanges = false; state.notifications.unshift({ id: crypto.randomUUID(), title: "Nueva grilla publicada", text: `La versión ${state.scheduleVersion} ya está disponible.`, time: "Ahora", type: "schedule", read: false }); audit("Publicó la grilla", `Semana 49 · v${state.scheduleVersion}`, "Publicada"); scheduleMode = "official"; persist(); toast(`Grilla versión ${state.scheduleVersion} publicada`); }
+  if (["export-state-json", "import-state-json", "toggle-schedule", "cycle-shift", "publish", "save-planning-week", "generate-planning-proposal", "reset-demo"].includes(action)) toast("Esta función está temporalmente deshabilitada mientras se migra al backend PostgreSQL.", "error");
   if (action === "new-request") newRequestModal();
   if (action === "view-request") requestDetailModal(button.dataset.id);
   if (action === "open-revoke-request") revokeRequestModal(button.dataset.id);
   if (action === "new-user") newUserModal();
   if (action === "edit-user") editUserModal(button.dataset.id);
-  if (action === "create-user-for-employee") createUserForEmployeeModal(button.dataset.id);
+  if (action === "reset-user-password") resetUserPasswordModal(button.dataset.id);
+  if (action === "create-user-for-employee") createUserForEmployeeModal(button.dataset.employeeId);
+  if (action === "delete-user") {
+    const targetUser = state.users.find((item) => item.id === button.dataset.id);
+    if (!targetUser) return toast("No se encontró el usuario.", "error");
+    if (!confirm(`¿Desactivar el acceso de ${targetUser.username}? Se conservará el historial.`)) return;
+    try { await apiCommand(`/api/users/${encodeURIComponent(targetUser.id)}/deactivate`, {}); toast("Acceso desactivado"); } catch (error) { toast(error.message, "error"); }
+  }
+  if (action === "reactivate-user") {
+    const targetUser = state.users.find((item) => item.id === button.dataset.id);
+    if (!targetUser) return toast("No se encontró el usuario.", "error");
+    if (!confirm(`¿Reactivar el acceso de ${targetUser.username}?`)) return;
+    try { await apiCommand(`/api/users/${encodeURIComponent(targetUser.id)}/reactivate`, {}); toast("Acceso reactivado"); } catch (error) { toast(error.message, "error"); }
+  }
   if (action === "new-planning-week" && canEditSchedule(user.role)) newPlanningWeekModal();
   if (action === "open-planning-library") { planningView = "library"; render(); }
   if (action === "select-planning-date") { planningDateIndex = Number(button.dataset.dateIndex) || 0; render(); }
@@ -1868,51 +1888,56 @@ document.addEventListener("click", (event) => {
   if (action === "remove-planning-assignment") {
     const week = state.planningWeek;
     if (!week || !["draft", "published", "paused"].includes(week.status) || !canEditSchedule(user.role)) return;
-    const before = week.assignments.length;
-    week.assignments = week.assignments.filter((assignment) => assignment.positionId !== button.dataset.positionId);
-    if (week.assignments.length === before) return toast("No había asignación para quitar.", "error");
-    closeModal(); persistPlanningWeekLifecycle(week); toast("Asignación quitada");
+    try {
+      await apiCommand(`/api/planning/assignments/${encodeURIComponent(button.dataset.positionId)}`, null, "DELETE", { "X-Week-Id": week.id, "If-Match": String(week.version) });
+      closeModal(); toast("Asignación quitada");
+    } catch (error) { toast(error.message, "error"); }
   }
   if (action === "remove-planning-day-off") {
     const week = state.planningWeek;
     if (!week || !["draft", "published", "paused"].includes(week.status) || !canEditSchedule(user.role)) return;
-    const before = week.daysOff?.length || 0;
-    week.daysOff = (week.daysOff || []).filter((dayOff) => dayOff.id !== button.dataset.dayOffId);
-    if (week.daysOff.length === before) return toast("No se encontró el franco para quitar.", "error");
-    closeModal(); persistPlanningWeekLifecycle(week); toast("Franco quitado");
+    try {
+      await apiCommand(`/api/planning/days-off/${encodeURIComponent(button.dataset.dayOffId)}`, null, "DELETE", { "X-Week-Id": week.id, "If-Match": String(week.version) });
+      closeModal(); toast("Franco quitado");
+    } catch (error) { toast(error.message, "error"); }
   }
   if (action === "remove-week-exception") {
     const week = state.planningWeek;
     if (!week || !["draft", "published", "paused"].includes(week.status) || !canEditSchedule(user.role)) return;
-    const exception = (week.exceptions || []).find((item) => item.id === button.dataset.exceptionId);
-    if (!exception) return toast("No se encontró la excepción.", "error");
-    week.exceptions = (week.exceptions || []).filter((item) => item.id !== exception.id);
-    audit("Eliminó una excepción semanal", exceptionTypes[exception.type] || "Excepción", "Eliminada");
-    persistPlanningWeekLifecycle(week); toast("Excepción eliminada");
+    try {
+      await apiCommand(`/api/planning/exceptions/${encodeURIComponent(button.dataset.exceptionId)}`, null, "DELETE", { "X-Week-Id": week.id, "If-Match": String(week.version) });
+      toast("Excepción eliminada");
+    } catch (error) { toast(error.message, "error"); }
   }
-  if (action === "save-planning-week") savePlanningWeekToJson();
-  if (action === "generate-planning-proposal") generatePlanningProposal();
   if (action === "publish-planning-week") publishPlanningWeek();
   if (action === "pause-planning-week") pausePlanningWeek();
   if (action === "draft-planning-week") draftPlanningWeek();
   if (action === "delete-planning-week") deletePlanningWeek();
-  if (action === "close-modal") { if (event.target === button || button.classList.contains("modal-close") || button.tagName === "BUTTON") closeModal(); }
+  if (action === "close-modal") {
+    if (document.querySelector(".busy-modal-backdrop")) return;
+    if (document.querySelector(".mandatory-modal-backdrop")) return;
+    if (event.target === button || button.classList.contains("modal-close") || button.tagName === "BUTTON") closeModal();
+  }
   if (action === "filter-request") { requestFilter = button.dataset.filter; render(); }
   if (action === "partner-resolve") {
     const request = state.requests.find((r) => r.id === button.dataset.id);
     const normalizedRequest = request ? normalizeRequestForView(request) : null;
     if (!request || normalizedRequest.partnerEmployeeId !== user.employeeId || normalizedRequest.status !== "pendingPartner") return toast("No se puede resolver esta solicitud.", "error");
-    const accepted = button.dataset.status === "partnerAccepted";
-    request.partnerStatus = accepted ? "accepted" : "rejected";
-    request.status = accepted ? "pendingManager" : "partnerRejected";
-    state.notifications.unshift({ id: crypto.randomUUID(), title: statusText[request.status], text: `${request.id} · ${requestTypes[normalizeRequestForView(request).type]}.`, time: "Ahora", type: "request", read: false });
-    audit(`${accepted ? "Aceptó" : "Rechazó"} una solicitud como compañero`, request.id, statusText[request.status]);
-    closeModal(); persist(); toast(statusText[request.status]);
+    try {
+      const result = await apiCommand(`/api/requests/${encodeURIComponent(request.id)}/partner-response`, { status: button.dataset.status });
+      closeModal(); toast(statusText[result.status]);
+    } catch (error) { toast(error.message, "error"); }
   }
   if (action === "resolve") {
     const request = state.requests.find((r) => r.id === button.dataset.id);
     const normalizedRequest = request ? normalizeRequestForView(request) : null;
     if (!request || !canManagerResolveRequest(normalizedRequest)) return toast("La solicitud no está lista para resolver.", "error");
+    try {
+      await apiCommand(`/api/requests/${encodeURIComponent(request.id)}/resolve`, { status: button.dataset.status });
+      closeModal();
+      toast(`Solicitud ${statusText[button.dataset.status].toLowerCase()}`);
+    } catch (error) { toast(error.message, "error"); }
+    return;
     const approvedBy = { id: user.id || user.username, name: user.name, role: user.role };
     if (button.dataset.status === "approved" && ["absence", "leave"].includes(normalizedRequest.type)) {
       const coverEmployeeId = document.querySelector(`[data-request-cover="${request.id}"]`)?.value || "";
@@ -1946,7 +1971,7 @@ document.addEventListener("click", (event) => {
     audit(`${request.status === "approved" ? "Aprobó" : "Rechazó"} una solicitud`, request.id, statusText[request.status]);
     closeModal(); persist(); toast(`Solicitud ${statusText[request.status].toLowerCase()}`);
   }
-  if (action === "delete-user") {
+  if (action === "disabled-delete-user") {
     if (!canManageEmployees(user.role)) return toast("Solo una encargada puede eliminar usuarios.", "error");
     const targetUser = state.users.find((item) => item.id === button.dataset.id);
     if (!targetUser) return toast("No se encontró el usuario.", "error");
@@ -1960,9 +1985,26 @@ document.addEventListener("click", (event) => {
     persist(); toast(shouldDeleteEmployee ? "Usuario y datos laborales eliminados de la base JSON" : "Usuario eliminado de la base JSON");
   }
   if (action === "toggle-employee") toast("Usá editar o eliminar usuario para modificar la base JSON.", "error");
-  if (action === "read-notification") { const notification = state.notifications.find((n) => n.id === button.dataset.id); notification.read = true; persist(); }
-  if (action === "read-all") { state.notifications.forEach((n) => n.read = true); persist(); toast("Notificaciones marcadas como leídas"); }
-  if (action === "reset-demo") { state = resetState(state.stateRevision); persist(); toast("Datos iniciales restablecidos"); }
+  if (action === "read-notification") { try { await apiCommand("/api/notifications/read", { notificationId: button.dataset.id }); } catch (error) { toast(error.message, "error"); } }
+  if (action === "read-all") { try { await apiCommand("/api/notifications/read", {}); toast("Notificaciones marcadas como leídas"); } catch (error) { toast(error.message, "error"); } }
+});
+
+document.addEventListener("keydown", (event) => {
+  const backdrop = document.querySelector(".modal-backdrop");
+  if (!backdrop) return;
+  if (event.key === "Escape" && !backdrop.classList.contains("busy-modal-backdrop") && !backdrop.classList.contains("mandatory-modal-backdrop")) {
+    event.preventDefault();
+    closeModal();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = [...backdrop.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 });
 
 render();
+if (user?.mustChangePassword) forcePasswordChangeModal();

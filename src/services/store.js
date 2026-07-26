@@ -1,29 +1,35 @@
-import {
-  auditLogs,
-  DAYS,
-  demoUsers as initialUsers,
-  employees,
-  incidents,
-  initialAudit,
-  initialNotifications,
-  initialRequests,
-  initialSchedule,
-  pisos,
-  referenceSchedule,
-  requests,
-  rolesOperativos,
-  rolesSistema,
-  sectores,
-  turnos,
-  weeklySchedules,
-} from "../data/mockData.js?v=20260717-2";
+// Railway/PostgreSQL es la fuente de datos. No se importan datos de ejemplo
+// al navegador, para que no queden expuestos como un módulo estático público.
+import { csrfHeaders, requestApi } from "./api.js";
+const DAYS = [];
+const initialUsers = [];
+const employees = [];
+const incidents = [];
+const initialAudit = [];
+const initialNotifications = [];
+const initialRequests = [];
+const initialSchedule = [];
+const pisos = {};
+const referenceSchedule = { days: [] };
+const rolesOperativos = {};
+const rolesSistema = {};
+const sectores = {};
+const turnos = {};
+const weeklySchedules = [];
 
 const KEY = "uzumaki-mvp-state-v5";
 const LEGACY_KEYS = ["uzumaki-mvp-state-v4", "uzumaki-mvp-state-v3", "uzumaki-mvp-state-v2", "uzumaki-mvp-state-v1", "turnia-mvp-state-v1"];
-const API_STATE_URL = "/api/state";
+// La aplicación ya no inicia leyendo una copia global de la base. El backend
+// entrega un bootstrap acotado al rol autenticado.
+const API_BOOTSTRAP_URL = "/api/bootstrap";
 let saveQueue = Promise.resolve();
-export const STATE_FILE_NAME = "uzumaki-db.json";
+export const STATE_STORAGE_LABEL = "PostgreSQL";
+export const STATE_FILE_NAME = "gestion-turnos-export.json";
 export const canPersistStateFile = () => window.location.protocol.startsWith("http");
+export function clearCachedState() {
+  localStorage.removeItem(KEY);
+  LEGACY_KEYS.forEach((key) => localStorage.removeItem(key));
+}
 const normalizePlanningWeek = (week) => {
   if (!week || typeof week !== "object") return null;
   return {
@@ -173,33 +179,18 @@ const removeCredentials = (state) => {
   return state;
 };
 
-export async function authenticate(username, password) {
-  if (!canPersistStateFile()) throw new Error("Abrí la app desde server.py para iniciar sesión.");
-  const response = await fetch("/api/auth/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.message || "No se pudo iniciar sesión.");
-  return result.user;
-}
-
-export async function endSession() {
-  if (canPersistStateFile()) await fetch("/api/auth/logout", { method: "POST" });
-}
-
 async function loadStateFromApi(options = {}) {
   if (!options.remote || !window.location.protocol.startsWith("http")) return null;
-  const response = await fetch(API_STATE_URL, { cache: "no-store" });
-  if (response.status === 404) return null;
-  if (response.status === 401) {
-    const error = new Error("La sesión venció. Volvé a iniciar sesión.");
-    error.code = "authenticationRequired";
+  try {
+    return removeCredentials(normalizeState(await requestApi(API_BOOTSTRAP_URL)));
+  } catch (error) {
+    if (error.status === 404) return null;
+    if (error.status === 401) {
+      error.message = "La sesión venció. Volvé a iniciar sesión.";
+      error.code = "authenticationRequired";
+    }
     throw error;
   }
-  if (!response.ok) throw new Error("No se pudo cargar la base JSON.");
-  return removeCredentials(normalizeState(await response.json()));
 }
 
 export async function loadState(options = { remote: true }) {
@@ -233,14 +224,14 @@ async function persistState(state, options = {}) {
     removeCredentials(state);
     localStorage.setItem(KEY, JSON.stringify(state));
     if (options.requireFile) {
-      throw new Error(`Para guardar en ${STATE_FILE_NAME}, abrí la app desde server.py y no como archivo local.`);
+      throw new Error(`Para guardar en ${STATE_STORAGE_LABEL}, abrí la app desde server.py y no como archivo local.`);
     }
     return { local: true, file: false };
   }
   try {
-    const response = await fetch(API_STATE_URL, {
+    const response = await fetch("/api/state", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...csrfHeaders() },
       body: JSON.stringify(state),
     });
     if (response.status === 409) {
@@ -250,7 +241,7 @@ async function persistState(state, options = {}) {
       conflict.currentRevision = details.currentRevision;
       throw conflict;
     }
-    if (!response.ok) throw new Error(`No se pudo escribir ${STATE_FILE_NAME}.`);
+    if (!response.ok) throw new Error(`No se pudo escribir ${STATE_STORAGE_LABEL}.`);
     const result = await response.json();
     state.stateRevision = result.stateRevision;
     state.stateUpdatedAt = result.stateUpdatedAt;
@@ -288,8 +279,7 @@ export function hydrateStateFromJson(text) {
 }
 
 export function resetState(stateRevision = 0) {
-  localStorage.removeItem(KEY);
-  LEGACY_KEYS.forEach((key) => localStorage.removeItem(key));
+  clearCachedState();
   const state = freshState();
   state.stateRevision = stateRevision;
   saveState(state);
