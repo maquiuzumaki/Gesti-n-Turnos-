@@ -13,7 +13,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlunparse
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -43,9 +43,14 @@ def database_url():
     password = os.environ.get("RAILWAY_TCP_PROXY_PASSWORD") or os.environ.get("PGPASSWORD")
     database = os.environ.get("PGDATABASE")
     if all((tcp_host, tcp_port, user, password, database)):
-        return "postgresql://{}:{}@{}:{}/{}?sslmode=require".format(
-            quote(user, safe=""), quote(password, safe=""), tcp_host, tcp_port, quote(database, safe="")
-        )
+        return urlunparse((
+            "postgresql",
+            "{}:{}@{}:{}".format(quote(user, safe=""), quote(password, safe=""), tcp_host, tcp_port),
+            "/" + quote(database, safe=""),
+            "",
+            "sslmode=require",
+            "",
+        ))
     return os.environ.get("DATABASE_PUBLIC_URL") or os.environ.get("DATABASE_URL")
 
 

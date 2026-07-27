@@ -26,7 +26,9 @@ if (user && !user.mustChangePassword && !state.users.some((item) => item.id === 
 }
 let page = "dashboard";
 let scheduleMode = "official";
-let planningView = "library";
+// Al abrir la sección se prioriza la grilla vigente. El historial permanece
+// disponible desde el control de volver de la propia planificación.
+let planningView = "editor";
 let planningDateIndex = 0;
 let selectedPlanningWeekIds = new Set();
 let sidebarCollapsed = sessionStorage.getItem("uzumaki-sidebar-collapsed") === "true";
@@ -648,7 +650,7 @@ function planningLaneSlot(week, position, conflicts) {
 function planningLaneDaysOff(week, sector, date, daysOffSummary, conflicts) {
   const dayOffs = daysOffSummary?.[sector]?.[date] || [];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
-  return `<section class="planning-lane planning-lane-off"><header><div class="planning-lane-title"><span>○</span><div><h3>Francos · ${sector}</h3><small>${dayOffs.length ? `${dayOffs.length} personas disponibles` : "Sin francos cargados"}</small></div></div><b class="planning-lane-status neutral">${dayOffs.length}</b></header><button class="planning-lane-days-off" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"}>${dayOffs.length ? dayOffs.map((dayOff) => `<span class="planning-lane-off-chip ${dayOff.source === "manualDayOff" ? "manual" : ""}"><strong>${escapeHtml(dayOff.name)}</strong><small>${escapeHtml(dayOff.type || "Franco")}</small></span>`).join("") : "Agregar franco"}</button></section>`;
+  return `<section class="planning-lane planning-lane-off"><header><div class="planning-lane-title"><span>○</span><div><h3>Francos · ${sector}</h3><small>${dayOffs.length ? `${dayOffs.length} personas disponibles` : "Sin francos cargados"}</small></div></div><b class="planning-lane-status neutral">${dayOffs.length}</b></header><button class="planning-lane-days-off" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"}>${dayOffs.length ? dayOffs.map((dayOff) => `<span class="planning-lane-off-chip ${dayOff.source === "manualDayOff" ? "manual" : ""}"><strong>${escapeHtml(dayOff.name)}</strong></span>`).join("") : "Agregar franco"}</button></section>`;
 }
 
 function planningGoogleStat(label, value, meta) {
@@ -668,7 +670,7 @@ function staffPublishedPlanningWeekPage(week) {
 function planningWeekStructure(week, conflicts, showExceptions = true, providedDaysOffSummary = null, simpleGridView = false) {
   const staffView = simpleGridView || !isAdminRole(user.role);
   const focusedEmployeeId = user.role === "staff" ? user.employeeId : planningFocusedEmployeeId;
-  const daysOffSummary = providedDaysOffSummary || buildDailyDaysOffSummary({
+  const daysOffSummary = providedDaysOffSummary || week.visibleDaysOffSummary || buildDailyDaysOffSummary({
     employees: state.employees,
     week,
     availabilityMap: buildWeeklyAvailabilityMap(state.employees, week, { requests: state.requests }),
@@ -687,7 +689,7 @@ function planningFocusToolbar(week, focusedEmployeeId, daysOffSummary = {}) {
     const daysOff = Object.values(daysOffSummary)
       .flatMap((sectorDays) => Object.values(sectorDays).flat())
       .filter((dayOff) => dayOff.employeeId === user.employeeId);
-    const offText = daysOff.length ? ` · ${daysOff.map((item) => `${formatIsoDate(item.date).slice(0, 5)} ${item.tipo || "Franco"}`).join(", ")}` : "";
+    const offText = daysOff.length ? ` · Francos: ${daysOff.map((item) => formatIsoDate(item.date).slice(0, 5)).join(", ")}` : "";
     return `<div class="planning-focus-summary"><strong>Mi semana · ${turns} turnos</strong><span>Mis asignaciones están resaltadas${offText}.</span></div>`;
   }
   if (user.role !== "supervisor") return "";
@@ -776,13 +778,13 @@ function planningPositionSector(week, section, conflicts, showExceptions = true,
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
   const showSpecialChips = !staffView && canEditSchedule(user.role);
   const shifts = [
-    { value: "Mañana", modifier: "morning", icon: "☼", label: "TURNO MAÑANA" },
-    { value: "Tarde", modifier: "afternoon", icon: "☾", label: "TURNO TARDE" },
+    { value: "Mañana", modifier: "morning", icon: "☼", label: "Mañana" },
+    { value: "Tarde", modifier: "afternoon", icon: "☾", label: "Tarde" },
   ];
   const rowsByShift = Object.fromEntries(shifts.map((shift) => [shift.value, rows.filter((row) => row.shift === shift.value)]));
   const rowMarkup = (row) => {
     const [labelTitle, ...details] = row.label.split(" · ");
-    const title = row.sector === "Cocina" ? "Cocina" : row.floor ? `${row.floor} piso` : labelTitle;
+    const title = row.sector === "Cocina" ? "Cocina" : row.floor ? `Piso ${row.floor}` : labelTitle;
     const detail = details.join(" · ");
     return `<div class="planning-position-row-label shift-${row.shift === "Mañana" ? "morning" : "afternoon"}"><strong>${title}</strong>${detail ? `<small>${detail}</small>` : ""}</div>${dates.map((date, index) => {
     const position = positions.find((item) => item.templateId === row.templateId && item.date === date);
@@ -819,7 +821,7 @@ function planningDaysOffSector(week, sector, daysOffSummary, conflicts) {
   const dayNames = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
   const sectionId = `planning-days-off-${sector.toLowerCase()}`;
-  const title = `FRANCOS ${sector.toUpperCase()}`;
+  const title = `Francos · ${sector}`;
   return `<section class="planning-position-sector reference-sector reference-sector-off" aria-labelledby="${sectionId}">
     <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">○</span><div><span class="reference-sector-eyebrow">DISPONIBILIDAD</span><h2 id="${sectionId}">${title}</h2></div></header>
     <div class="planning-position-board"><div class="planning-position-grid planning-days-off-grid">
@@ -833,10 +835,7 @@ function planningDaysOffSector(week, sector, daysOffSummary, conflicts) {
 function planningDaysOffCell(week, sector, date, dayOffs, editable, conflicts) {
   return `<div class="planning-position-cell planning-days-off-cell"><button class="planning-day-off-button ${dayOffs.length ? "assigned" : "empty"}" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"} aria-label="Cargar franco de ${sector} para ${formatIsoDate(date)}">${dayOffs.length ? dayOffs.map((dayOff) => {
     const warnings = dayOff.dayOffId ? conflicts.dayOffWarnings.get(dayOff.dayOffId) || [] : [];
-    const type = dayOff.type || "Franco";
-    const sourceLabel = dayOff.source === "manualDayOff" ? "Manual" : "";
-    const meta = sourceLabel ? `${type} · ${sourceLabel}` : type;
-    return `<span class="planning-day-off-chip ${warnings.length ? "warning" : ""} ${dayOff.source === "calculatedCycle" ? "calculated" : "manual"}" title="${escapeHtml(dayOff.name)} · ${escapeHtml(meta)}"><strong>${escapeHtml(dayOff.name)}</strong><small>${escapeHtml(meta)}</small>${warnings.length ? `<em>${warnings[0]}</em>` : ""}</span>`;
+    return `<span class="planning-day-off-chip ${warnings.length ? "warning" : ""} ${dayOff.source === "calculatedCycle" ? "calculated" : "manual"}" title="${escapeHtml(dayOff.name)}"><strong>${escapeHtml(dayOff.name)}</strong>${warnings.length ? `<em>${warnings[0]}</em>` : ""}</span>`;
   }).join("") : `<span>Sin francos</span>`}</button></div>`;
 }
 
@@ -1821,7 +1820,7 @@ document.addEventListener("click", async (event) => {
     return;
   }
   const pageButton = event.target.closest("[data-page]");
-  if (pageButton) { page = pageButton.dataset.page; if (page === "schedule" && canEditSchedule(user.role)) planningView = "library"; document.querySelector("#sidebar")?.classList.remove("open"); render(); return; }
+  if (pageButton) { page = pageButton.dataset.page; if (page === "schedule" && canEditSchedule(user.role)) planningView = state.planningWeek ? "editor" : "library"; document.querySelector("#sidebar")?.classList.remove("open"); render(); return; }
   const button = event.target.closest("[data-action]"); if (!button) return;
   const action = button.dataset.action;
   if (action === "toggle-password") { const input = document.querySelector('input[name="password"]'); input.type = input.type === "password" ? "text" : "password"; button.textContent = input.type === "password" ? "Ver" : "Ocultar"; }

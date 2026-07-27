@@ -159,6 +159,47 @@ class Database:
         exceptions = [{"id": r["id"], "positionId": r["position_id"], "date": r["date"].isoformat(), "shift": r["shift"], "sector": r["sector"], "affectedEmployeeId": r["affected_employee_id"], "coverEmployeeId": r["cover_employee_id"], "type": r["type"], "status": r["status"], "note": r["note"], **(r["metadata"] or {})} for r in cur.fetchall()]
         return {"id": week["id"], "name": week["name"], "startDate": week["start_date"].isoformat(), "endDate": week["end_date"].isoformat(), "status": week["status"], "version": week["version"], "publishedAt": iso(week["published_at"]), "operationalPositions": positions, "assignments": assignments, "daysOff": days_off, "exceptions": exceptions, "coverages": []}
 
+    def _visible_days_off_summary(self, cur, week):
+        """Entrega sólo los nombres de francos para perfiles no gestores.
+
+        Los ciclos F1/F2 y sus anclas se resuelven en servidor: el cliente de
+        personal recibe el resultado visible, sin los datos técnicos del ciclo.
+        """
+        start_date = date.fromisoformat(week["startDate"])
+        dates = [(start_date + timedelta(days=index)).isoformat() for index in range(7)]
+        summary = {sector: {item: [] for item in dates} for sector in ("Cocina", "Pisos")}
+        cur.execute("""SELECT e.id,e.name,e.sector_id,e.status,e.participates_in_operation,
+                              fc.anchor_date,fc.anchor_type,fc.cycle_length_days
+                       FROM employees e
+                       LEFT JOIN sectors s ON s.id=e.sector_id
+                       LEFT JOIN employee_franco_cycles fc ON fc.employee_id=e.id
+                       WHERE s.name IN ('Cocina','Pisos')""")
+        employees = cur.fetchall()
+        employee_by_id = {employee["id"]: employee for employee in employees}
+        manual_keys = set()
+        for day_off in week.get("daysOff", []):
+            employee = employee_by_id.get(day_off["employeeId"])
+            sector = day_off.get("sector") or (employee and {"sec-cocina": "Cocina", "sec-pisos": "Pisos"}.get(employee["sector_id"]))
+            if not employee or sector not in summary or day_off["date"] not in summary[sector]:
+                continue
+            manual_keys.add((employee["id"], day_off["date"]))
+            summary[sector][day_off["date"]].append({"employeeId": employee["id"], "name": employee["name"], "sector": sector, "date": day_off["date"], "source": "manualDayOff"})
+        for employee in employees:
+            if employee["status"] != "active" or not employee["participates_in_operation"]:
+                continue
+            sector = {"sec-cocina": "Cocina", "sec-pisos": "Pisos"}.get(employee["sector_id"])
+            if not sector:
+                continue
+            for target_date in dates:
+                if (employee["id"], target_date) in manual_keys:
+                    continue
+                if cycle_day_off(employee["anchor_date"], employee["anchor_type"], target_date, employee["cycle_length_days"] or 15):
+                    summary[sector][target_date].append({"employeeId": employee["id"], "name": employee["name"], "sector": sector, "date": target_date, "source": "calculatedCycle"})
+        for sector in summary.values():
+            for records in sector.values():
+                records.sort(key=lambda item: item["name"])
+        return summary
+
     def state(self, actor):
         """Devuelve únicamente la información que el rol autenticado necesita."""
         privileged = actor.get("role") in MANAGER_ROLES
@@ -275,6 +316,8 @@ class Database:
                 cur.execute("SELECT * FROM planning_weeks WHERE status='published' ORDER BY start_date DESC LIMIT 1")
             active = cur.fetchone()
             planning_week = self._week_dto(cur, active) if active else None
+            if planning_week and not privileged:
+                planning_week["visibleDaysOffSummary"] = self._visible_days_off_summary(cur, planning_week)
             requests = self._requests_dto(cur, actor)
             notifications = self._notifications_dto(cur, actor)
             audit_logs = []
