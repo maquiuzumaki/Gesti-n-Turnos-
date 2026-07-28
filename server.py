@@ -497,6 +497,11 @@ class UzumakiHandler(SimpleHTTPRequestHandler):
                 if path == "/api/planning/weeks":
                     result = POSTGRES.create_week(session, body.get("name"), body.get("startDate"))
                     return self._send_json(201, self._with_week(result, session, result["id"]))
+                if path.startswith("/api/planning/weeks/") and path.endswith("/generate-proposal"):
+                    week_id = path.split("/")[4]
+                    result = POSTGRES.generate_planning_proposal(session, week_id, body.get("version"))
+                    log_event("planning_proposal_generated", actor=session["id"], week_id=week_id, generated=result["generatedAssignments"])
+                    return self._send_json(200, self._with_week(result, session, week_id))
                 if path == "/api/planning/days-off":
                     result = POSTGRES.add_day_off(session, body.get("weekId"), body.get("employeeId"), body.get("date"), body.get("sectorId"), body.get("type"), body.get("version"))
                     return self._send_json(200, self._with_week(result, session, body.get("weekId")))

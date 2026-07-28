@@ -18,6 +18,7 @@ from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from planning_rules import cycle_day_off
+from planning_proposal_engine import generate_planning_proposal
 
 
 ROLE_TO_SYSTEM = {"admin": "sys-admin", "manager": "sys-encargada", "supervisor": "sys-supervisora", "staff": "sys-personal"}
@@ -150,8 +151,8 @@ class Database:
                        FROM planning_positions p LEFT JOIN sectors s ON s.id=p.sector_id LEFT JOIN shifts sh ON sh.id=p.shift_id LEFT JOIN floors f ON f.id=p.floor_id
                        WHERE p.planning_week_id=%s ORDER BY p.date,p.label""", (week["id"],))
         positions = [{"id": r["id"], "templateId": r["template_id"], "date": r["date"].isoformat(), "dayIndex": r["day_index"], "sector": r["sector"], "shift": r["shift"], "label": r["label"], "slot": r["slot"], "floor": r["floor"], "optional": r["optional"]} for r in cur.fetchall()]
-        cur.execute("SELECT id, position_id, employee_id, assignment_type, generated, generation_reason, covered_employee_id, metadata FROM planning_assignments WHERE planning_week_id=%s", (week["id"],))
-        assignments = [{"id": r["id"], "positionId": r["position_id"], "employeeId": r["employee_id"], "assignmentType": r["assignment_type"], "generated": r["generated"], "generationReason": r["generation_reason"], "coveredEmployeeId": r["covered_employee_id"], **(r["metadata"] or {})} for r in cur.fetchall()]
+        cur.execute("SELECT id, position_id, employee_id, assignment_type, generated, manual_override, generation_reason, covered_employee_id, metadata FROM planning_assignments WHERE planning_week_id=%s", (week["id"],))
+        assignments = [{"id": r["id"], "positionId": r["position_id"], "employeeId": r["employee_id"], "assignmentType": r["assignment_type"], "generated": r["generated"], "manualOverride": r["manual_override"], "generationReason": r["generation_reason"], "coveredEmployeeId": r["covered_employee_id"], **(r["metadata"] or {})} for r in cur.fetchall()]
         cur.execute("SELECT d.id,d.employee_id,d.date,s.name sector,d.type FROM planning_days_off d LEFT JOIN sectors s ON s.id=d.sector_id WHERE d.planning_week_id=%s", (week["id"],))
         days_off = [{"id": r["id"], "employeeId": r["employee_id"], "date": r["date"].isoformat(), "sector": r["sector"], "tipo": r["type"]} for r in cur.fetchall()]
         cur.execute("""SELECT e.id,e.position_id,e.date,sh.name shift,s.name sector,e.affected_employee_id,e.cover_employee_id,e.type,e.status,e.note,e.metadata
@@ -377,6 +378,88 @@ class Database:
         if actor.get("role") not in MANAGER_ROLES:
             raise DomainError("Tu perfil no puede modificar la planificación.", 403, "forbidden")
 
+    def generate_planning_proposal(self, actor, week_id, expected_version=None):
+        """Calcula y persiste una propuesta completa en una única transacción."""
+        self._assert_manager(actor)
+        if expected_version is None:
+            raise DomainError("La versión de la grilla es obligatoria para generar una propuesta.", 409, "versionRequired")
+        with self.cursor() as (conn, cur):
+            cur.execute("SELECT * FROM planning_weeks WHERE id=%s FOR UPDATE", (week_id,))
+            week_row = cur.fetchone()
+            if not week_row:
+                raise DomainError("Semana inexistente.", 404, "notFound")
+            if week_row["status"] != "draft":
+                raise DomainError("Solo se puede generar una propuesta en una semana borrador.", 409, "invalidWeekStatus")
+            if expected_version != week_row["version"]:
+                raise DomainError("La grilla fue modificada por otra persona. Recargá antes de generar.", 409, "versionConflict")
+
+            cur.execute("""SELECT p.id,p.template_id,p.date,s.name sector,sh.name shift,p.label,p.optional
+                           FROM planning_positions p
+                           LEFT JOIN sectors s ON s.id=p.sector_id LEFT JOIN shifts sh ON sh.id=p.shift_id
+                           WHERE p.planning_week_id=%s ORDER BY p.date,p.label,p.id""", (week_id,))
+            positions = [{"id": row["id"], "templateId": row["template_id"], "date": row["date"].isoformat(), "sector": row["sector"], "shift": row["shift"], "label": row["label"], "optional": row["optional"]} for row in cur.fetchall()]
+            if not positions:
+                raise DomainError("La semana no tiene puestos operativos para calcular.", 409, "emptyWeek")
+
+            cur.execute("""SELECT e.id,e.name,e.status,e.participates_in_operation,e.habitual_position_template_id,e.legacy_data,
+                                  fc.anchor_date,fc.anchor_type,fc.cycle_length_days
+                           FROM employees e LEFT JOIN employee_franco_cycles fc ON fc.employee_id=e.id
+                           WHERE e.status='active' AND e.participates_in_operation=TRUE ORDER BY e.id""")
+            employees = []
+            for row in cur.fetchall():
+                legacy = row["legacy_data"] or {}
+                employees.append({
+                    "id": row["id"], "name": row["name"], "status": row["status"], "participaEnOperacion": row["participates_in_operation"],
+                    "habitualPositionTemplateId": row["habitual_position_template_id"],
+                    "vacations": legacy.get("vacations", legacy.get("vacaciones", [])),
+                    "francoCycle": {"anchorDate": row["anchor_date"].isoformat(), "anchorType": row["anchor_type"], "cycleLengthDays": row["cycle_length_days"]} if row["anchor_date"] else None,
+                })
+
+            cur.execute("""SELECT id,position_id,employee_id,assignment_type,generated,manual_override,generation_reason,covered_employee_id,metadata
+                           FROM planning_assignments WHERE planning_week_id=%s AND (generated=FALSE OR manual_override=TRUE)""", (week_id,))
+            preserved = []
+            for row in cur.fetchall():
+                preserved.append({"id": row["id"], "positionId": row["position_id"], "employeeId": row["employee_id"], "assignmentType": row["assignment_type"], "generated": row["generated"], "manualOverride": row["manual_override"], "generationReason": row["generation_reason"], "coveredEmployeeId": row["covered_employee_id"], **(row["metadata"] or {})})
+
+            cur.execute("SELECT id,employee_id,date,type FROM planning_days_off WHERE planning_week_id=%s", (week_id,))
+            manual_days_off = [{"id": row["id"], "employeeId": row["employee_id"], "date": row["date"].isoformat(), "tipo": row["type"]} for row in cur.fetchall()]
+            cur.execute("""SELECT id,date,affected_employee_id,cover_employee_id,type,status,metadata
+                           FROM planning_exceptions WHERE planning_week_id=%s""", (week_id,))
+            exceptions = [{"id": row["id"], "date": row["date"].isoformat(), "affectedEmployeeId": row["affected_employee_id"], "coverEmployeeId": row["cover_employee_id"], "type": row["type"], "status": row["status"], **(row["metadata"] or {})} for row in cur.fetchall()]
+            cur.execute("""SELECT id,employee_id,type,status,target_date,start_date,end_date,schedule_impact
+                           FROM requests WHERE status='approved'""")
+            approved_requests = [{"id": row["id"], "employeeId": row["employee_id"], "type": row["type"], "status": row["status"], "targetDate": row["target_date"].isoformat() if row["target_date"] else None, "startDate": row["start_date"].isoformat() if row["start_date"] else None, "endDate": row["end_date"].isoformat() if row["end_date"] else None, "scheduleImpact": row["schedule_impact"] or {}} for row in cur.fetchall()]
+            cur.execute("""SELECT a.employee_id,p.template_id,p.date,s.name sector,sh.name shift
+                           FROM planning_assignments a JOIN planning_positions p ON p.id=a.position_id
+                           LEFT JOIN sectors s ON s.id=p.sector_id LEFT JOIN shifts sh ON sh.id=p.shift_id
+                           WHERE a.planning_week_id<>%s""", (week_id,))
+            history = [{"employeeId": row["employee_id"], "templateId": row["template_id"], "date": row["date"].isoformat(), "sector": row["sector"], "shift": row["shift"]} for row in cur.fetchall()]
+
+            proposal = generate_planning_proposal({
+                "week": {"id": week_id, "startDate": week_row["start_date"].isoformat()}, "employees": employees, "positions": positions,
+                "currentAssignments": preserved, "manualDaysOff": manual_days_off, "exceptions": exceptions,
+                "approvedRequests": approved_requests, "assignmentHistory": history, "generatedAt": utcnow().isoformat(),
+            })
+
+            # No se borran decisiones humanas: solo filas generadas sin override.
+            cur.execute("DELETE FROM planning_assignments WHERE planning_week_id=%s AND generated=TRUE AND manual_override=FALSE", (week_id,))
+            positions_by_id = {position["id"]: position for position in positions}
+            for assignment in proposal["assignments"]:
+                position = positions_by_id[assignment["positionId"]]
+                metadata = {key: value for key, value in assignment.items() if key not in {"positionId", "employeeId", "assignmentType", "generated", "generationReason", "coveredEmployeeId"}}
+                cur.execute("""INSERT INTO planning_assignments
+                    (id,planning_week_id,position_id,employee_id,assignment_date,assignment_type,generated,manual_override,generation_reason,covered_employee_id,created_by,metadata)
+                    VALUES (%s,%s,%s,%s,%s,%s,TRUE,FALSE,%s,%s,%s,%s)""", (
+                    f"generated:{week_id}:{assignment['positionId']}", week_id, assignment["positionId"], assignment["employeeId"], position["date"],
+                    assignment.get("assignmentType", "regular"), assignment.get("generationReason"), assignment.get("coveredEmployeeId"), actor["id"], Jsonb(metadata),
+                ))
+            cur.execute("""UPDATE planning_weeks SET version=version+1,last_proposal_at=now(),last_proposal_mode=%s,last_coverage_gaps=%s,updated_at=now()
+                           WHERE id=%s RETURNING version""", (proposal["metadata"]["mode"], Jsonb(proposal["uncoveredPositions"]), week_id))
+            version = cur.fetchone()["version"]
+            self._audit(cur, actor["id"], "generated_planning_proposal", "planning_week", week_id, metadata={"generatedAssignments": len(proposal["assignments"]), "preservedManualAssignments": len(preserved), "uncoveredPositions": proposal["uncoveredPositions"], "skippedRules": proposal["skippedRules"]})
+            conn.commit()
+        return {"ok": True, "version": version, "generatedAssignments": len(proposal["assignments"]), "preservedManualAssignments": len(preserved), "uncoveredPositions": proposal["uncoveredPositions"], "warnings": proposal["warnings"]}
+
     @staticmethod
     def _assert_manageable_role(actor, target_system_role, desired_role=None):
         """Evita que una encargada eleve permisos o administre cuentas jerárquicas."""
@@ -559,8 +642,13 @@ class Database:
             cur.execute("SELECT id FROM planning_assignments WHERE planning_week_id=%s AND employee_id=%s AND assignment_date=%s AND position_id<>%s",(week_id,employee_id,pos["date"],position_id))
             if cur.fetchone(): raise DomainError("La persona ya está asignada ese día.",409,"duplicateAssignment")
             cur.execute("SELECT id FROM planning_assignments WHERE position_id=%s",(position_id,)); existing=cur.fetchone()
-            if existing: cur.execute("UPDATE planning_assignments SET employee_id=%s,assignment_date=%s,created_by=%s,updated_at=now() WHERE id=%s",(employee_id,pos["date"],actor["id"],existing["id"]))
-            else: cur.execute("INSERT INTO planning_assignments (id,planning_week_id,position_id,employee_id,assignment_date,created_by) VALUES (%s,%s,%s,%s,%s,%s)",(secrets.token_hex(16),week_id,position_id,employee_id,pos["date"],actor["id"]))
+            if existing:
+                # Una edición desde la grilla pasa a ser una decisión humana y
+                # queda protegida frente a futuras regeneraciones automáticas.
+                cur.execute("""UPDATE planning_assignments SET employee_id=%s,assignment_date=%s,created_by=%s,
+                    generated=FALSE,manual_override=TRUE,generation_reason=NULL,updated_at=now() WHERE id=%s""",(employee_id,pos["date"],actor["id"],existing["id"]))
+            else:
+                cur.execute("INSERT INTO planning_assignments (id,planning_week_id,position_id,employee_id,assignment_date,generated,manual_override,created_by) VALUES (%s,%s,%s,%s,%s,FALSE,FALSE,%s)",(secrets.token_hex(16),week_id,position_id,employee_id,pos["date"],actor["id"]))
             cur.execute("UPDATE planning_weeks SET version=version+1,updated_at=now() WHERE id=%s RETURNING version",(week_id,)); version=cur.fetchone()["version"]
             self._audit(cur, actor["id"], "assigned_employee", "planning_position", position_id, metadata={"weekId": week_id, "employeeId": employee_id})
             conn.commit()

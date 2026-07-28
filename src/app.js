@@ -4,7 +4,7 @@ import { showToast } from "./ui/feedback.js?v=20260726-01";
 import { closeModal as closeModalUi, openModal } from "./ui/modal.js?v=20260726-01";
 import { canEditApplications, canEditSchedule, canManageEmployees, canResolveRequests, canSeeAudit, isAdminRole, roleLabel } from "./services/permissions.js?v=20260712-3";
 import { createDraftPlanningWeek, ensureKitchenPlanningSlots } from "./services/planningWeeks.js?v=20260716-1";
-import { applyApprovedAbsenceOrLeave, applyApprovedShiftChange, applyGustavoJulioException, buildDailyDaysOffSummary, buildWeeklyAvailabilityMap, generateFloorCoverageAssignments, generateHabitualAssignments, generateKitchenMorningCollaborationAssignments } from "./services/planningEngine.js?v=20260717-6";
+import { applyApprovedAbsenceOrLeave, applyApprovedShiftChange, buildDailyDaysOffSummary, buildWeeklyAvailabilityMap } from "./services/planningEngine.js?v=20260717-6";
 
 const SESSION_KEY = "uzumaki-user-v5";
 let user = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null");
@@ -35,6 +35,8 @@ let sidebarCollapsed = sessionStorage.getItem("uzumaki-sidebar-collapsed") === "
 let employeeSearch = "";
 let requestFilter = "all";
 let planningFocusedEmployeeId = null;
+let notificationPopoverOpen = false;
+let mutationInFlight = null;
 
 const icons = {
   dashboard: "▦", schedule: "▤", employees: "♙", requests: "↔", notifications: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>', audit: "◷", logout: "↪", plus: "+", menu: "☰",
@@ -134,17 +136,39 @@ function applyApiFragment(result) {
 // Los cambios operativos se envían como comandos pequeños. El backend valida
 // y responde con el recurso actualizado; nunca se vuelve a descargar el
 // estado completo después de una acción.
-async function apiCommand(path, payload = null, method = "POST", extraHeaders = {}, reloadState = true) {
-  const result = await requestApi(path, {
-    method,
-    payload: payload === null ? undefined : payload,
-    headers: extraHeaders,
-  });
-  if (reloadState) {
-    applyApiFragment(result);
-    render();
+async function apiCommand(path, payload = null, method = "POST", extraHeaders = {}, reloadState = true, options = {}) {
+  const isMutation = !["GET", "HEAD"].includes(method.toUpperCase());
+  if (isMutation && mutationInFlight) {
+    const error = new Error("Esperá a que termine la operación en curso.");
+    error.code = "mutationInFlight";
+    throw error;
   }
-  return result;
+  if (isMutation) {
+    mutationInFlight = { path, title: options.title || "Guardando cambios", message: options.message || "Estamos actualizando la información de forma segura." };
+    document.body.classList.add("mutation-pending");
+    if (options.showBusyModal !== false) busyModal(mutationInFlight.title, mutationInFlight.message);
+  }
+  try {
+    const result = await requestApi(path, {
+      method,
+      payload: payload === null ? undefined : payload,
+      headers: extraHeaders,
+    });
+    if (reloadState) applyApiFragment(result);
+    return result;
+  } catch (error) {
+    if (error.status === 409 && state?.planningWeek?.id) {
+      try { applyApiFragment(await requestApi(`/api/planning/weeks/${encodeURIComponent(state.planningWeek.id)}`)); } catch { /* El mensaje original sigue siendo el más útil. */ }
+    }
+    throw error;
+  } finally {
+    if (isMutation) {
+      mutationInFlight = null;
+      document.body.classList.remove("mutation-pending");
+      if (options.showBusyModal !== false) closeModal();
+    }
+    if (reloadState || isMutation) render();
+  }
 }
 
 function persistenceActions() {
@@ -199,7 +223,16 @@ function sidebar() {
 function topbar() {
   const titles = { dashboard: isAdminRole(user.role) ? "Resumen operativo" : `Hola, ${user.name.split(" ")[0]}`, schedule: isAdminRole(user.role) ? "Grilla operativa" : "Mi semana", employees: "Personal", requests: isAdminRole(user.role) ? "Solicitudes" : "Mis solicitudes", notifications: "Notificaciones", audit: "Auditoría" };
   const weekLabel = state.planningWeek ? `${formatIsoDate(state.planningWeek.startDate)} — ${formatIsoDate(state.planningWeek.endDate)}` : "Semana sin crear";
-  return `<header class="topbar"><button class="mobile-menu" data-action="menu" aria-label="Abrir menú de navegación">${icons.menu}</button><div><span class="crumb">Uzumaki /</span><strong>${titles[page]}</strong></div><div class="top-actions"><button class="icon-button" data-page="notifications" aria-label="Notificaciones">${icons.notifications}${unreadCount() ? `<b>${unreadCount()}</b>` : ""}</button><span class="date-pill">${weekLabel}</span></div></header>`;
+  return `<header class="topbar"><button class="mobile-menu" data-action="menu" aria-label="Abrir menú de navegación">${icons.menu}</button><div><span class="crumb">Uzumaki /</span><strong>${titles[page]}</strong></div><div class="top-actions"><div class="notification-popover-anchor"><button class="icon-button ${notificationPopoverOpen ? "active" : ""}" type="button" data-action="toggle-notification-popover" aria-label="Notificaciones" aria-haspopup="dialog" aria-expanded="${notificationPopoverOpen}" aria-controls="notification-popover">${icons.notifications}${unreadCount() ? `<b>${unreadCount()}</b>` : ""}</button>${notificationPopoverOpen ? notificationPopover() : ""}</div><span class="date-pill">${weekLabel}</span></div></header>`;
+}
+
+function notificationPopover() {
+  const recentUnread = state.notifications.filter((notification) => !notification.read).slice(0, 5);
+  return `<section class="notification-popover" id="notification-popover" role="dialog" aria-label="Notificaciones sin leer">
+    <header class="notification-popover-head"><div><span class="eyebrow">NOVEDADES</span><strong>Notificaciones</strong></div><span>${recentUnread.length ? `${recentUnread.length} sin leer` : "Al día"}</span></header>
+    <div class="notification-popover-list" role="list">${recentUnread.length ? recentUnread.map((notification) => `<button class="notification-popover-item" type="button" role="listitem" data-action="open-notification" data-id="${escapeHtml(notification.id)}"><span class="notification-popover-symbol ${escapeHtml(notification.type)}" aria-hidden="true">${notification.type === "alert" ? "!" : notification.type === "schedule" ? "▤" : "↔"}</span><span><strong>${escapeHtml(notification.title)}</strong><p>${escapeHtml(notification.text)}</p><small>${escapeHtml(notification.time)}</small></span><i aria-label="No leída"></i></button>`).join("") : `<div class="notification-popover-empty"><span aria-hidden="true">✓</span><p>No tenés notificaciones pendientes.</p></div>`}</div>
+    <footer><button class="notification-popover-all" type="button" data-page="notifications">Ver todas las notificaciones <span aria-hidden="true">→</span></button></footer>
+  </section>`;
 }
 
 function renderPage() {
@@ -479,10 +512,8 @@ function planningWeekStatusIcon(status) {
 }
 
 function planningWeekLifecycleActions(week) {
-  // La propuesta automática y el guardado integral se migrarán al backend.
-  // Se ocultan mientras PostgreSQL es la única fuente de escritura.
   const saveButton = "";
-  const suggestButton = "";
+  const suggestButton = week.status === "draft" ? `<button class="button secondary planning-proposal-action" data-action="generate-planning-proposal" ${mutationInFlight ? "disabled" : ""}>Generar propuesta</button>` : "";
   const exceptionButton = `<button class="button secondary planning-exception-action" data-action="new-week-exception">Excepción</button>`;
   const publishButton = `<button class="button primary planning-publish-action" data-action="publish-planning-week">${week.status === "paused" ? "Republicar" : "Publicar"}</button>`;
   const deleteButton = `<button class="button danger-soft planning-icon-action planning-delete-action" data-action="delete-planning-week" aria-label="Eliminar grilla" title="Eliminar grilla"><span aria-hidden="true">🗑</span></button>`;
@@ -991,50 +1022,6 @@ async function openStoredPlanningWeek(weekId) {
   }
 }
 
-function generatePlanningProposal() {
-  const week = state.planningWeek;
-  if (!week || !canEditSchedule(user.role)) return;
-  if (week.status === "published") return toast("La grilla publicada validada no se modifica. Creá o abrí una grilla borrador para generar una propuesta.", "error");
-  if (!confirm("Se completarán puestos vacíos con titulares habituales, excepción Gustavo/Julio, coberturas de Pisos y colaboración de Cocina mañana si Pisos queda completo. Las asignaciones manuales se conservan.")) return;
-  ensureKitchenPlanningSlots(week);
-  const generatedAt = new Date().toISOString();
-  const availabilityMap = buildWeeklyAvailabilityMap(state.employees, week, { requests: state.requests });
-  const habitualProposals = generateHabitualAssignments({ week, employees: state.employees, availabilityMap });
-  const gustavoJulioResult = applyGustavoJulioException({
-    week,
-    employees: state.employees,
-    availabilityMap,
-    pendingAssignments: habitualProposals,
-    generatedAt,
-  });
-  const coverageResult = generateFloorCoverageAssignments({
-    week,
-    employees: state.employees,
-    availabilityMap,
-    weeklySchedules: state.weeklySchedules,
-    pendingAssignments: gustavoJulioResult.assignments,
-    generatedAt,
-  });
-  const kitchenCollaborations = generateKitchenMorningCollaborationAssignments({
-    week,
-    employees: state.employees,
-    availabilityMap,
-    weeklySchedules: state.weeklySchedules,
-    pendingAssignments: [...gustavoJulioResult.assignments, ...coverageResult.assignments],
-    floorCoverageGaps: coverageResult.uncovered,
-    generatedAt,
-  });
-  const proposals = [...gustavoJulioResult.assignments, ...coverageResult.assignments, ...kitchenCollaborations];
-  proposals.forEach((proposal) => week.assignments.push({ id: crypto.randomUUID(), ...proposal }));
-  week.lastProposalAt = generatedAt;
-  week.lastProposalMode = "habitualPositionsGustavoJulioFloorCoverageAndKitchenMorningCollaboration";
-  week.lastCoverageGaps = coverageResult.uncovered;
-  audit("Generó una propuesta de planificación", week.name, `${gustavoJulioResult.assignments.length - gustavoJulioResult.coverages.length} titulares, ${gustavoJulioResult.coverages.length} cobertura Gustavo/Julio, ${coverageResult.assignments.length} coberturas de Pisos y ${kitchenCollaborations.length} colaboraciones en Cocina mañana`);
-  persistPlanningWeekLifecycle(week);
-  const gapText = coverageResult.uncovered.length ? ` · ${coverageResult.uncovered.length} puestos de Pisos sin cubrir` : "";
-  toast(proposals.length ? `Propuesta generada: ${gustavoJulioResult.assignments.length - gustavoJulioResult.coverages.length} titulares, ${gustavoJulioResult.coverages.length} cobertura Gustavo/Julio, ${coverageResult.assignments.length} coberturas y ${kitchenCollaborations.length} colaboraciones${gapText}` : `No había asignaciones disponibles${gapText}`);
-}
-
 async function pausePlanningWeek() {
   const week = state.planningWeek;
   if (!week || week.status !== "published" || !canEditSchedule(user.role)) return;
@@ -1224,6 +1211,19 @@ function closeModal() {
 
 function busyModal(title, message) {
   modal(`<div class="busy-dialog" role="status" aria-live="assertive"><span class="spinner" aria-hidden="true"></span><div><h2>${escapeHtml(title)}</h2><p class="muted">${escapeHtml(message)}</p></div></div>`, "busy-modal", title);
+}
+
+function planningProposalModal() {
+  modal(`<button class="modal-close" data-action="close-modal" aria-label="Cerrar">×</button><span class="eyebrow">PLANIFICACIÓN AUTOMÁTICA</span><h2>Revisá antes de generar</h2><p class="muted">La propuesta se calcula en PostgreSQL usando las reglas operativas vigentes.</p><div class="proposal-review-list"><div><span>✓</span><p><strong>Se calcula</strong>Titulares, F1/F2, Gustavo/Julio, Pisos y apoyo de Cocina.</p></div><div><span>⌁</span><p><strong>Se conserva</strong>Asignaciones manuales, francos manuales y excepciones.</p></div><div><span>⊙</span><p><strong>Se revisa luego</strong>Los puestos que queden sin cubrir se informarán al finalizar.</p></div></div><div class="proposal-safety-note">La grilla seguirá en estado borrador y podrá editarse antes de publicarla.</div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button type="button" class="button primary" data-action="confirm-generate-planning-proposal">Generar propuesta <span>→</span></button></div>`, "planning-proposal-modal", "Generar propuesta automática");
+}
+
+function planningProposalProgressModal() {
+  modal(`<div class="proposal-progress" role="status" aria-live="assertive"><span class="spinner" aria-hidden="true"></span><div><span class="eyebrow">PLANIFICACIÓN AUTOMÁTICA</span><h2>Generando propuesta</h2><p class="muted">Estamos validando disponibilidad, francos y coberturas antes de guardar la grilla.</p></div></div>`, "busy-modal planning-proposal-modal", "Generando propuesta");
+}
+
+function planningProposalResultModal(result) {
+  const gaps = result.uncoveredPositions || [];
+  modal(`<span class="dialog-icon ${gaps.length ? "warning" : ""}" aria-hidden="true">${gaps.length ? "!" : "✓"}</span><span class="eyebrow">PROPUESTA GENERADA</span><h2>${gaps.length ? "La propuesta necesita revisión" : "La propuesta está lista para revisar"}</h2><p class="muted">Se generaron <strong>${result.generatedAssignments}</strong> asignaciones y se conservaron <strong>${result.preservedManualAssignments}</strong> decisiones manuales.</p>${gaps.length ? `<div class="proposal-result-gaps"><strong>${gaps.length} puesto${gaps.length === 1 ? "" : "s"} sin cubrir</strong>${gaps.slice(0, 4).map((gap) => `<span>${escapeHtml(formatIsoDate(gap.date))} · ${escapeHtml(gap.label)}</span>`).join("")}${gaps.length > 4 ? `<small>Y ${gaps.length - 4} más en la grilla.</small>` : ""}</div>` : `<div class="proposal-result-ok">Todos los puestos requeridos recibieron una propuesta.</div>`}<div class="modal-actions"><button type="button" class="button primary" data-action="close-modal" autofocus>Revisar grilla</button></div>`, "planning-proposal-result-modal", "Resultado de propuesta");
 }
 
 function loginErrorModal(message) {
@@ -1577,6 +1577,7 @@ async function loginAsDemoUser(match, options = {}) {
 
 document.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (mutationInFlight) return toast("Esperá a que termine la operación en curso.", "error");
   if (event.target.id === "login-form") {
     const data = new FormData(event.target);
     const username = data.get("username").trim().toLowerCase();
@@ -1812,6 +1813,16 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("click", async (event) => {
+  if (mutationInFlight && !event.target.closest(".busy-modal")) {
+    event.preventDefault();
+    return;
+  }
+  const notificationTrigger = event.target.closest('[data-action="toggle-notification-popover"]');
+  const notificationPopover = event.target.closest("#notification-popover");
+  if (notificationPopoverOpen && !notificationTrigger && !notificationPopover) {
+    notificationPopoverOpen = false;
+    render();
+  }
   const sidebarToggle = event.target.closest('[data-action="toggle-sidebar"]');
   if (sidebarToggle) {
     sidebarCollapsed = !sidebarCollapsed;
@@ -1820,9 +1831,16 @@ document.addEventListener("click", async (event) => {
     return;
   }
   const pageButton = event.target.closest("[data-page]");
-  if (pageButton) { page = pageButton.dataset.page; if (page === "schedule" && canEditSchedule(user.role)) planningView = state.planningWeek ? "editor" : "library"; document.querySelector("#sidebar")?.classList.remove("open"); render(); return; }
+  if (pageButton) { notificationPopoverOpen = false; page = pageButton.dataset.page; if (page === "schedule" && canEditSchedule(user.role)) planningView = state.planningWeek ? "editor" : "library"; document.querySelector("#sidebar")?.classList.remove("open"); render(); return; }
   const button = event.target.closest("[data-action]"); if (!button) return;
   const action = button.dataset.action;
+  if (action === "toggle-notification-popover") { notificationPopoverOpen = !notificationPopoverOpen; render(); return; }
+  if (action === "open-notification") {
+    notificationPopoverOpen = false;
+    page = "notifications";
+    try { await apiCommand("/api/notifications/read", { notificationId: button.dataset.id }); } catch (error) { toast(error.message, "error"); render(); }
+    return;
+  }
   if (action === "toggle-password") { const input = document.querySelector('input[name="password"]'); input.type = input.type === "password" ? "text" : "password"; button.textContent = input.type === "password" ? "Ver" : "Ocultar"; }
   if (action === "confirm-logout") accountSessionModal();
   if (action === "open-account-session") { closeModal(); accountSessionModal(); }
@@ -1853,7 +1871,26 @@ document.addEventListener("click", async (event) => {
     }
   }
   if (action === "menu") document.querySelector("#sidebar")?.classList.toggle("open");
-  if (["export-state-json", "import-state-json", "toggle-schedule", "cycle-shift", "publish", "save-planning-week", "generate-planning-proposal", "reset-demo"].includes(action)) toast("Esta función está temporalmente deshabilitada mientras se migra al backend PostgreSQL.", "error");
+  if (["export-state-json", "import-state-json", "toggle-schedule", "cycle-shift", "publish", "save-planning-week", "reset-demo"].includes(action)) toast("Esta función está temporalmente deshabilitada mientras se migra al backend PostgreSQL.", "error");
+  if (action === "generate-planning-proposal") {
+    const week = state.planningWeek;
+    if (!week || week.status !== "draft" || mutationInFlight) return;
+    planningProposalModal();
+  }
+  if (action === "confirm-generate-planning-proposal") {
+    const week = state.planningWeek;
+    if (!week || week.status !== "draft" || mutationInFlight) return;
+    closeModal();
+    planningProposalProgressModal();
+    try {
+      const result = await apiCommand(`/api/planning/weeks/${encodeURIComponent(week.id)}/generate-proposal`, { version: week.version }, "POST", {}, true, { showBusyModal: false, title: "Generando propuesta", message: "Estamos aplicando las reglas operativas." });
+      closeModal();
+      planningProposalResultModal(result);
+    } catch (error) {
+      closeModal();
+      toast(error.message || "No se pudo generar la propuesta.", "error");
+    }
+  }
   if (action === "new-request") newRequestModal();
   if (action === "view-request") requestDetailModal(button.dataset.id);
   if (action === "open-revoke-request") revokeRequestModal(button.dataset.id);
@@ -1989,6 +2026,11 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && notificationPopoverOpen) {
+    notificationPopoverOpen = false;
+    render();
+    return;
+  }
   const backdrop = document.querySelector(".modal-backdrop");
   if (!backdrop) return;
   if (event.key === "Escape" && !backdrop.classList.contains("busy-modal-backdrop") && !backdrop.classList.contains("mandatory-modal-backdrop")) {
