@@ -41,6 +41,11 @@ def iso(value):
     return value.isoformat().replace("+00:00", "Z") if value else None
 
 
+def planning_week_name(start_date):
+    end_date = start_date + timedelta(days=6)
+    return f"Grilla operativa del {start_date.day}/{start_date.month} al {end_date.day}/{end_date.month}"
+
+
 class Database:
     def __init__(self, url):
         self.url = url
@@ -223,7 +228,9 @@ class Database:
             if privileged:
                 for item, row in zip(users, user_rows):
                     item["active"] = bool(row["active"])
-            cur.execute("SELECT * FROM planning_weeks ORDER BY start_date DESC")
+            cur.execute("""SELECT * FROM planning_weeks
+                           ORDER BY CASE status WHEN 'published' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,
+                                    start_date DESC, updated_at DESC""")
             weeks=[self._week_dto(cur,w) for w in cur.fetchall()]
             if privileged:
                 cur.execute("SELECT * FROM requests ORDER BY created_at DESC")
@@ -232,10 +239,7 @@ class Database:
             requests=[{"id":r["id"],"employeeId":r["employee_id"],"type":r["type"],"status":r["status"],"partnerEmployeeId":r["partner_employee_id"] or "","partnerStatus":r["partner_status"] or "","note":r["note"],"targetDate":r["target_date"].isoformat() if r["target_date"] else None,"startDate":r["start_date"].isoformat() if r["start_date"] else None,"endDate":r["end_date"].isoformat() if r["end_date"] else None,"scheduleImpact":r["schedule_impact"] or {},"date":iso(r["created_at"]),"revokedAt":iso(r["revoked_at"])} for r in cur.fetchall()]
             cur.execute("SELECT n.id,n.title,n.text,n.type,n.read_at,n.created_at FROM notifications n WHERE recipient_user_id IS NULL OR recipient_user_id=%s ORDER BY n.created_at DESC", (actor["id"],))
             notifications=[{"id":r["id"],"title":r["title"],"text":r["text"],"type":r["type"],"read":bool(r["read_at"]),"time":iso(r["created_at"])} for r in cur.fetchall()]
-            audit_logs=[]
-            if privileged:
-                cur.execute("SELECT id,action,entity_id,result,metadata,created_at FROM audit_logs ORDER BY created_at DESC")
-                audit_logs=[{**(r["metadata"] or {}),"id":r["id"],"action":r["action"],"entity":r["entity_id"],"result":r["result"],"time":iso(r["created_at"])} for r in cur.fetchall()]
+            audit_logs = self._audit_logs_dto(cur) if privileged else []
             catalogs=self._catalogs(cur)
         active=next((w for w in weeks if w["status"] in {"draft","published","paused"}), None)
         return {"stateRevision": active["version"] if active else 0, "stateUpdatedAt":None, "employees":employees,"users":users,"catalogs":catalogs,"weeklySchedules":weeks,"planningWeek":active,"requests":requests,"notifications":notifications,"auditLogs":audit_logs,"incidents":[],"schedule":[],"draft":[],"days":[],"scheduleVersion":0,"hasDraftChanges":False}
@@ -243,6 +247,30 @@ class Database:
     # Lecturas de la API. A diferencia de state(), estos métodos no recorren
     # todas las semanas ni construyen una grilla completa que la pantalla no va
     # a utilizar. state() se conserva solamente como compatibilidad temporal.
+    def _audit_logs_dto(self, cur, limit=None):
+        query = """SELECT a.id,a.action,a.entity_type,a.entity_id,a.metadata,a.created_at,
+                          COALESCE(NULLIF(actor.name,''), actor.username, 'Sistema') AS actor_name,
+                          COALESCE(NULLIF(a.metadata->>'name',''), NULLIF(a.metadata->>'username',''), week.name) AS entity_name
+                   FROM audit_logs a
+                   LEFT JOIN users actor ON actor.id=a.actor_user_id
+                   LEFT JOIN planning_weeks week ON week.id=COALESCE(a.metadata->>'weekId', a.entity_id)
+                   ORDER BY a.created_at DESC"""
+        params = ()
+        if limit is not None:
+            query += " LIMIT %s"
+            params = (limit,)
+        cur.execute(query, params)
+        return [{
+            **(row["metadata"] or {}),
+            "id": row["id"],
+            "action": row["action"],
+            "entityType": row["entity_type"],
+            "entity": row["entity_id"],
+            "entityName": row["entity_name"],
+            "user": row["actor_name"],
+            "time": iso(row["created_at"]),
+        } for row in cur.fetchall()]
+
     def _employees_dto(self, cur, privileged=False):
         cur.execute("""SELECT e.id,e.name,e.initials,e.phone,e.status,e.participates_in_operation,e.habitual_position_template_id,
             cr.id role_id,cr.name role,s.id sector_id,s.name sector,sh.id shift_id,sh.name turno,f.number piso,fc.anchor_date,fc.anchor_type,fc.cycle_length_days,e.legacy_data
@@ -312,7 +340,9 @@ class Database:
                 cur.execute("SELECT id,username,name,system_role,employee_id,active,must_change_password FROM users WHERE id=%s AND active=TRUE", (actor["id"],))
             users = [self.user_dto(row) | ({"active":bool(row["active"])} if privileged else {}) for row in cur.fetchall()]
             if privileged:
-                cur.execute("SELECT * FROM planning_weeks WHERE status IN ('draft','published','paused') ORDER BY start_date DESC LIMIT 1")
+                cur.execute("""SELECT * FROM planning_weeks WHERE status IN ('draft','published','paused')
+                               ORDER BY CASE status WHEN 'published' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,
+                                        start_date DESC, updated_at DESC LIMIT 1""")
             else:
                 cur.execute("SELECT * FROM planning_weeks WHERE status='published' ORDER BY start_date DESC LIMIT 1")
             active = cur.fetchone()
@@ -321,10 +351,7 @@ class Database:
                 planning_week["visibleDaysOffSummary"] = self._visible_days_off_summary(cur, planning_week)
             requests = self._requests_dto(cur, actor)
             notifications = self._notifications_dto(cur, actor)
-            audit_logs = []
-            if privileged:
-                cur.execute("SELECT id,action,entity_id,result,metadata,created_at FROM audit_logs ORDER BY created_at DESC LIMIT 100")
-                audit_logs = [{**(row["metadata"] or {}),"id":row["id"],"action":row["action"],"entity":row["entity_id"],"result":row["result"],"time":iso(row["created_at"])} for row in cur.fetchall()]
+            audit_logs = self._audit_logs_dto(cur, limit=100) if privileged else []
             catalogs = self._catalogs(cur) if privileged else {"sectores":{},"turnos":{},"pisos":{},"rolesOperativos":{},"rolesSistema":{}}
             # Se mantiene en la misma conexión: antes este paso abría una
             # segunda conexión remota durante cada carga inicial.
@@ -335,7 +362,9 @@ class Database:
         """Datos mínimos del inicio; no carga personal, usuarios ni auditoría."""
         with self.cursor() as (_, cur):
             if actor.get("role") in MANAGER_ROLES:
-                cur.execute("SELECT * FROM planning_weeks WHERE status IN ('draft','published','paused') ORDER BY start_date DESC LIMIT 1")
+                cur.execute("""SELECT * FROM planning_weeks WHERE status IN ('draft','published','paused')
+                               ORDER BY CASE status WHEN 'published' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,
+                                        start_date DESC, updated_at DESC LIMIT 1""")
             else:
                 cur.execute("SELECT * FROM planning_weeks WHERE status='published' ORDER BY start_date DESC LIMIT 1")
             active = cur.fetchone()
@@ -377,6 +406,28 @@ class Database:
     def _assert_manager(self, actor):
         if actor.get("role") not in MANAGER_ROLES:
             raise DomainError("Tu perfil no puede modificar la planificación.", 403, "forbidden")
+
+    @staticmethod
+    def _assert_audit_log_deletion_allowed(actor):
+        if actor.get("role") not in MANAGER_ROLES:
+            raise DomainError("Tu perfil no puede eliminar movimientos de auditoría.", 403, "forbidden")
+
+    def delete_audit_log(self, actor, audit_log_id):
+        self._assert_audit_log_deletion_allowed(actor)
+        with self.cursor() as (conn, cur):
+            cur.execute("DELETE FROM audit_logs WHERE id=%s RETURNING id", (audit_log_id,))
+            if not cur.fetchone():
+                raise DomainError("El movimiento de auditoría no existe.", 404, "notFound")
+            conn.commit()
+        return {"ok": True, "deletedAuditLogId": audit_log_id}
+
+    def reset_audit_logs(self, actor):
+        self._assert_audit_log_deletion_allowed(actor)
+        with self.cursor() as (conn, cur):
+            cur.execute("DELETE FROM audit_logs")
+            deleted_count = cur.rowcount
+            conn.commit()
+        return {"ok": True, "auditLogsReset": True, "deletedCount": deleted_count}
 
     def generate_planning_proposal(self, actor, week_id, expected_version=None):
         """Calcula y persiste una propuesta completa en una única transacción."""
@@ -678,11 +729,17 @@ class Database:
             start = date.fromisoformat(start_date)
         except (TypeError, ValueError):
             raise DomainError("La fecha de inicio no es válida.")
-        name = str(name or "").strip()
-        if not name:
-            raise DomainError("El nombre de la semana es obligatorio.")
+        # The range is the canonical identifier, regardless of what a client sends.
+        name = planning_week_name(start)
         week_id = secrets.token_hex(16)
         with self.cursor() as (conn, cur):
+            # Serializa la creación por semana incluso si llegan dos clics o
+            # sesiones al mismo tiempo; solo puede existir una grilla por rango.
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"planning-week:{start.isoformat()}",))
+            cur.execute("SELECT id,status,name FROM planning_weeks WHERE start_date=%s AND end_date=%s LIMIT 1", (start, start + timedelta(days=6)))
+            existing = cur.fetchone()
+            if existing:
+                raise DomainError(f"Ya existe la grilla '{existing['name']}' para estas fechas ({existing['status']}). Abrila desde el historial en lugar de crear otra.", 409, "duplicateWeek")
             cur.execute("INSERT INTO planning_weeks (id,name,start_date,end_date,status,created_by) VALUES (%s,%s,%s,%s,'draft',%s)", (week_id, name, start, start + timedelta(days=6), actor["id"]))
             cur.execute("SELECT id,sector_id,shift_id,label,slot,floor_id,optional FROM position_templates WHERE active=TRUE")
             templates = cur.fetchall()
@@ -795,6 +852,17 @@ class Database:
             conn.commit()
         return {"ok":True}
 
+    def delete_request(self, actor, request_id):
+        if actor.get("role") != "admin":
+            raise DomainError("Solo Administración principal puede eliminar solicitudes.", 403, "forbidden")
+        with self.cursor() as (conn, cur):
+            cur.execute("DELETE FROM requests WHERE id=%s RETURNING id", (request_id,))
+            if not cur.fetchone():
+                raise DomainError("La solicitud no existe.", 404, "notFound")
+            self._audit(cur, actor["id"], "deleted_request", "request", request_id)
+            conn.commit()
+        return {"ok": True, "deletedRequestId": request_id}
+
     def resolve_partner_request(self, actor, request_id, status):
         if status not in {"partnerAccepted","partnerRejected"}: raise DomainError("Respuesta de compañero inválida.")
         with self.cursor() as (conn,cur):
@@ -822,13 +890,44 @@ class Database:
         partner=data.get("partnerEmployeeId") or None
         if kind in {"dayOffChange","shiftChange"} and not partner: raise DomainError("Este cambio requiere un compañero.")
         request_id="SOL-"+secrets.token_hex(6).upper()
-        status="pendingPartner" if partner else "pendingManager"
+        manager_created = actor.get("role") in MANAGER_ROLES
+        status = "approved" if manager_created else ("pendingPartner" if partner else "pendingManager")
         target=(impact.get("target") or {}).get("date")
         with self.cursor() as (conn,cur):
-            cur.execute("INSERT INTO requests (id,employee_id,type,status,partner_employee_id,partner_status,note,target_date,schedule_impact) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",(request_id,employee_id,kind,status,partner,"pending" if partner else None,note,target,Jsonb(impact)))
+            cur.execute("INSERT INTO requests (id,employee_id,type,status,partner_employee_id,partner_status,note,target_date,schedule_impact) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",(request_id,employee_id,kind,status,partner,"accepted" if manager_created and partner else None,note,target,Jsonb(impact)))
             cur.execute("INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,result) VALUES (%s,%s,%s,'request',%s,%s)",(secrets.token_hex(16),actor["id"],"created_request",request_id,status))
             conn.commit()
-        return {"id":request_id,"status":status}
+        return {"id":request_id,"status":status,"managerCreated":manager_created}
+
+    def apply_manager_request_to_grid(self, actor, request_id):
+        """Recalcula la semana afectada cuando una encargada crea una solicitud.
+
+        El motor ya interpreta ausencias, licencias y cambios de franco aprobados.
+        Los cambios de turno se mantienen como una edición explícita de la grilla.
+        """
+        self._assert_manager(actor)
+        with self.cursor() as (_, cur):
+            cur.execute("SELECT type,schedule_impact FROM requests WHERE id=%s AND status='approved'", (request_id,))
+            request = cur.fetchone()
+            if not request:
+                raise DomainError("La solicitud aprobada no existe.", 404, "notFound")
+            if request["type"] == "shiftChange":
+                return {"autoApplied": False, "autoApplyReason": "shiftChangeRequiresGridEdit"}
+            impact = request["schedule_impact"] or {}
+            target_date = (impact.get("target") or {}).get("date") or (impact.get("proposed") or {}).get("date")
+            try:
+                target = date.fromisoformat(target_date)
+            except (TypeError, ValueError):
+                return {"autoApplied": False, "autoApplyReason": "invalidImpactDate"}
+            cur.execute("""SELECT id FROM planning_weeks
+                           WHERE status IN ('draft','published','paused')
+                             AND start_date<=%s AND end_date>=%s
+                           ORDER BY start_date DESC LIMIT 1""", (target, target))
+            week = cur.fetchone()
+        if not week:
+            return {"autoApplied": False, "autoApplyReason": "outsideActiveWeek"}
+        proposal = self.generate_planning_proposal(actor, week["id"])
+        return {"autoApplied": True, "autoAppliedWeekId": week["id"], **proposal}
 
     def resolve_request(self, actor, request_id, status):
         self._assert_manager(actor)

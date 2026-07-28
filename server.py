@@ -513,7 +513,12 @@ class UzumakiHandler(SimpleHTTPRequestHandler):
                     return self._send_json(200, self._with_week(POSTGRES.set_week_status(session, week_id, body.get("status"), body.get("version")), session, week_id))
                 if path == "/api/requests":
                     result = POSTGRES.create_request(session, body)
-                    return self._send_json(201, self._with_request(result, session, result["id"]))
+                    if result.get("managerCreated"):
+                        result.update(POSTGRES.apply_manager_request_to_grid(session, result["id"]))
+                    response = self._with_request(result, session, result["id"])
+                    if result.get("autoAppliedWeekId"):
+                        response["week"] = POSTGRES.week(session, result["autoAppliedWeekId"])
+                    return self._send_json(201, response)
                 if path.startswith("/api/requests/") and path.endswith("/resolve"):
                     request_id = path.split("/")[3]
                     return self._send_json(200, self._with_request(POSTGRES.resolve_request(session, request_id, body.get("status")), session, request_id))
@@ -580,6 +585,20 @@ class UzumakiHandler(SimpleHTTPRequestHandler):
                 return self._send_json(200, self._with_week(POSTGRES.remove_exception(session, week_id, path.split("/")[4], expected_version), session, week_id))
             if path.startswith("/api/planning/weeks/"):
                 return self._send_json(200, {**POSTGRES.delete_week(session, path.split("/")[4], expected_version), "deletedWeekId": path.split("/")[4]})
+            if path.startswith("/api/requests/"):
+                request_id = path.split("/")[3]
+                result = POSTGRES.delete_request(session, request_id)
+                log_event("request_deleted", actor=session["id"], request_id=request_id)
+                return self._send_json(200, result)
+            if path == "/api/audit-logs":
+                result = POSTGRES.reset_audit_logs(session)
+                log_event("audit_logs_reset", actor=session["id"], deleted_count=result["deletedCount"])
+                return self._send_json(200, result)
+            if path.startswith("/api/audit-logs/"):
+                audit_log_id = path.split("/")[3]
+                result = POSTGRES.delete_audit_log(session, audit_log_id)
+                log_event("audit_log_deleted", actor=session["id"], audit_log_id=audit_log_id)
+                return self._send_json(200, result)
         except DomainError as error:
             log_event("domain_rejected", actor=session.get("id"), path=path, code=error.code, reason=error.message)
             return self._send_json(error.status, {"error": error.code, "message": error.message})

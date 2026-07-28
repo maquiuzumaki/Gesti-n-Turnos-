@@ -2,7 +2,7 @@ import { clearCachedState, hydrateStateFromJson, loadState, resetState, saveStat
 import { authenticate, endSession, requestApi } from "./services/api.js?v=20260726-01";
 import { showToast } from "./ui/feedback.js?v=20260726-01";
 import { closeModal as closeModalUi, openModal } from "./ui/modal.js?v=20260726-01";
-import { canEditApplications, canEditSchedule, canManageEmployees, canResolveRequests, canSeeAudit, isAdminRole, roleLabel } from "./services/permissions.js?v=20260712-3";
+import { canEditApplications, canEditSchedule, canManageEmployees, canResolveRequests, canSeeAudit, isAdminRole, roleLabel } from "./services/permissions.js?v=20260728-06";
 import { createDraftPlanningWeek, ensureKitchenPlanningSlots } from "./services/planningWeeks.js?v=20260716-1";
 import { applyApprovedAbsenceOrLeave, applyApprovedShiftChange, buildDailyDaysOffSummary, buildWeeklyAvailabilityMap } from "./services/planningEngine.js?v=20260717-6";
 
@@ -122,6 +122,13 @@ function applyApiFragment(result) {
     state.weeklySchedules = (state.weeklySchedules || []).filter((week) => week.id !== result.deletedWeekId);
     if (state.planningWeek?.id === result.deletedWeekId) state.planningWeek = null;
   }
+  if (result.deletedAuditLogId) {
+    state.auditLogs = (state.auditLogs || []).filter((entry) => entry.id !== result.deletedAuditLogId);
+  }
+  if (result.deletedRequestId) {
+    state.requests = (state.requests || []).filter((request) => request.id !== result.deletedRequestId);
+  }
+  if (result.auditLogsReset) state.auditLogs = [];
   if (result.request) {
     const index = (state.requests || []).findIndex((request) => request.id === result.request.id);
     if (index >= 0) state.requests[index] = result.request;
@@ -201,11 +208,21 @@ function renderLogin(error = "", username = "") {
         <h2>Ingresá a tu espacio</h2>
         ${error ? `<div class="form-error">${escapeHtml(error)}</div>` : ""}
         <label>Usuario<input name="username" value="${escapeHtml(username)}" autocomplete="username" required autofocus /></label>
-        <label>Contraseña<div class="password-field"><input name="password" type="password" autocomplete="current-password" required /><button type="button" class="text-button" data-action="toggle-password">Ver</button></div></label>
+        <label>Contraseña${passwordField("password", { autocomplete: "current-password" })}</label>
         <button class="button primary wide" type="submit">Ingresar <span>→</span></button>
       </form>
     </section>
   </main>`;
+}
+
+function passwordEyeIcon(visible = false) {
+  return visible
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.6 10.7a3 3 0 0 0 4.2 4.2M9.9 4.2A10.8 10.8 0 0 1 12 4c5.5 0 9.3 5.1 9.8 8-.2 1.2-1 2.8-2.3 4.2M6.1 6.1C4.2 7.6 2.8 9.8 2.2 12c.7 2.9 4.3 8 9.8 8 1.5 0 2.9-.4 4.1-1"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.2 12C3 9.1 6.5 4 12 4s9 5.1 9.8 8c-.8 2.9-4.3 8-9.8 8S3 14.9 2.2 12Z"/><circle cx="12" cy="12" r="3"/></svg>';
+}
+
+function passwordField(name, { autocomplete, minLength, autofocus = false } = {}) {
+  return `<div class="password-field"><input name="${name}" type="password" autocomplete="${autocomplete || "current-password"}" ${minLength ? `minlength="${minLength}"` : ""} ${autofocus ? "autofocus" : ""} required /><button type="button" class="password-toggle" data-action="toggle-password" aria-label="Mostrar contraseña" title="Mostrar contraseña" aria-pressed="false">${passwordEyeIcon()}</button></div>`;
 }
 
 function sidebar() {
@@ -675,13 +692,13 @@ function planningLaneSlot(week, position, conflicts) {
   const stateClass = employee ? "assigned" : optional ? "optional" : "unfilled";
   const label = employee ? employee.name : optional ? "Apoyo opcional" : position.sector === "Pisos" ? "Sin cobertura" : "Sin asignar";
   const detail = employee ? `${employee.role}${warnings.length ? ` · ${warnings[0]}` : ""}` : optional ? "No requerido para publicar" : warnings[0] || "Elegí una persona compatible";
-  return `<button class="planning-lane-slot ${stateClass} ${warnings.length ? "has-warning" : ""}" type="button" ${editable ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"}><span class="planning-lane-avatar">${employee ? escapeHtml(employee.initials || initials(employee.name)) : optional ? "+" : "!"}</span><span><strong>${escapeHtml(position.label.replace(`${position.sector} ${position.shift} · `, ""))}</strong><small>${escapeHtml(label)} · ${escapeHtml(detail)}</small></span><i>›</i></button>`;
+  return `<button class="planning-lane-slot ${employee ? dayOffPersonColorClass(employee.name) : ""} ${stateClass} ${warnings.length ? "has-warning" : ""}" type="button" ${editable ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"}><span class="planning-lane-avatar">${employee ? escapeHtml(employee.initials || initials(employee.name)) : optional ? "+" : "!"}</span><span><strong>${escapeHtml(position.label.replace(`${position.sector} ${position.shift} · `, ""))}</strong><small>${escapeHtml(label)} · ${escapeHtml(detail)}</small></span><i>›</i></button>`;
 }
 
 function planningLaneDaysOff(week, sector, date, daysOffSummary, conflicts) {
   const dayOffs = daysOffSummary?.[sector]?.[date] || [];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
-  return `<section class="planning-lane planning-lane-off"><header><div class="planning-lane-title"><span>○</span><div><h3>Francos · ${sector}</h3><small>${dayOffs.length ? `${dayOffs.length} personas disponibles` : "Sin francos cargados"}</small></div></div><b class="planning-lane-status neutral">${dayOffs.length}</b></header><button class="planning-lane-days-off" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"}>${dayOffs.length ? dayOffs.map((dayOff) => `<span class="planning-lane-off-chip ${dayOff.source === "manualDayOff" ? "manual" : ""}"><strong>${escapeHtml(dayOff.name)}</strong></span>`).join("") : "Agregar franco"}</button></section>`;
+  return `<section class="planning-lane planning-lane-off"><header><div class="planning-lane-title"><span>○</span><div><h3>Francos · ${sector}</h3><small>${dayOffs.length ? `${dayOffs.length} personas disponibles` : "Sin francos cargados"}</small></div></div><b class="planning-lane-status neutral">${dayOffs.length}</b></header><button class="planning-lane-days-off" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"}>${dayOffs.length ? dayOffs.map((dayOff) => `<span class="planning-lane-off-chip ${dayOffPersonColorClass(dayOff.name)} ${dayOff.source === "manualDayOff" ? "manual" : ""}"><strong>${escapeHtml(dayOff.name)}</strong></span>`).join("") : "Agregar franco"}</button></section>`;
 }
 
 function planningGoogleStat(label, value, meta) {
@@ -833,7 +850,7 @@ function planningPositionSector(week, section, conflicts, showExceptions = true,
     const assignmentContent = employee
       ? staffView ? planningEmployeeName(employee) : `${planningEmployeeName(employee)}<small>${escapeHtml(employee.role)}</small>${specialChip}`
       : emptyState;
-    return `<div class="planning-position-cell ${staffView ? "staff-view" : ""} ${isFocused ? "is-focused" : ""} ${hasFocusedException ? "has-focused-exception" : ""} ${index === dates.length - 1 ? "is-last-day" : ""} ${warnings.length ? "has-warning" : ""} ${exceptions.length ? "has-exception" : ""}"><button class="planning-position-assignment ${employee ? "assigned" : "empty"} ${isFocused ? "is-focused" : ""} ${staffView ? "staff-view" : ""} ${warnings.length ? "warning" : ""} ${exceptions.length ? "exception" : ""} ${!staffView && !employee && position?.sector === "Pisos" ? "critical-empty" : ""} ${!staffView && !employee && isOptionalPlanningPosition(position) ? "optional-empty" : ""}" type="button" ${editable && position ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"} aria-label="${employee ? `Cambiar asignación de ${position.label}: ${employee.name}` : `Asignar empleado a ${position?.label || row.label}`}">${assignmentContent}${staffView ? "" : `${positionExceptionSummary(exceptions)}${warnings.length ? `<em>${warnings[0]}</em>` : ""}`}</button></div>`;
+    return `<div class="planning-position-cell ${staffView ? "staff-view" : ""} ${isFocused ? "is-focused" : ""} ${hasFocusedException ? "has-focused-exception" : ""} ${index === dates.length - 1 ? "is-last-day" : ""} ${warnings.length ? "has-warning" : ""} ${exceptions.length ? "has-exception" : ""}"><button class="planning-position-assignment ${employee ? dayOffPersonColorClass(employee.name) : ""} ${employee ? "assigned" : "empty"} ${isFocused ? "is-focused" : ""} ${staffView ? "staff-view" : ""} ${warnings.length ? "warning" : ""} ${exceptions.length ? "exception" : ""} ${!staffView && !employee && position?.sector === "Pisos" ? "critical-empty" : ""} ${!staffView && !employee && isOptionalPlanningPosition(position) ? "optional-empty" : ""}" type="button" ${editable && position ? `data-action="assign-planning-position" data-position-id="${position.id}"` : "disabled"} aria-label="${employee ? `Cambiar asignación de ${position.label}: ${employee.name}` : `Asignar empleado a ${position?.label || row.label}`}">${assignmentContent}${staffView ? "" : `${positionExceptionSummary(exceptions)}${warnings.length ? `<em>${warnings[0]}</em>` : ""}`}</button></div>`;
     }).join("")}`;
   };
   return `<section class="planning-position-sector reference-sector reference-sector-${section.key}" aria-labelledby="planning-${section.key}-title">
@@ -866,8 +883,15 @@ function planningDaysOffSector(week, sector, daysOffSummary, conflicts) {
 function planningDaysOffCell(week, sector, date, dayOffs, editable, conflicts) {
   return `<div class="planning-position-cell planning-days-off-cell"><button class="planning-day-off-button ${dayOffs.length ? "assigned" : "empty"}" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"} aria-label="Cargar franco de ${sector} para ${formatIsoDate(date)}">${dayOffs.length ? dayOffs.map((dayOff) => {
     const warnings = dayOff.dayOffId ? conflicts.dayOffWarnings.get(dayOff.dayOffId) || [] : [];
-    return `<span class="planning-day-off-chip ${warnings.length ? "warning" : ""} ${dayOff.source === "calculatedCycle" ? "calculated" : "manual"}" title="${escapeHtml(dayOff.name)}"><strong>${escapeHtml(dayOff.name)}</strong>${warnings.length ? `<em>${warnings[0]}</em>` : ""}</span>`;
+    return `<span class="planning-day-off-chip ${dayOffPersonColorClass(dayOff.name)} ${warnings.length ? "warning" : ""} ${dayOff.source === "calculatedCycle" ? "calculated" : "manual"}" title="${escapeHtml(dayOff.name)}"><strong>${escapeHtml(dayOff.name)}</strong>${warnings.length ? `<em>${warnings[0]}</em>` : ""}</span>`;
   }).join("") : `<span>Sin francos</span>`}</button></div>`;
+}
+
+function dayOffPersonColorClass(name) {
+  const normalized = String(name || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (normalized.includes("lucila")) return "franco-person-lucila";
+  if (normalized.includes("debora")) return "franco-person-debora";
+  return "";
 }
 
 function detectPlanningConflicts(week) {
@@ -1187,7 +1211,8 @@ function requestsPage() {
 function requestCard(r, admin) {
   const request = normalizeRequestForView(r);
   const meta = requestMetaItems(request);
-  return `<article class="request-card"><div class="request-card-top"><span class="request-icon large">${request.type === "absence" ? "+" : "↔"}</span><div><span class="request-id">${escapeHtml(request.id)}</span><h3>${escapeHtml(requestTypes[request.type] || request.type)}</h3><p>${escapeHtml(request.detail)}</p></div><span class="badge ${request.status}">${escapeHtml(statusText[request.status] || request.status)}</span></div><div class="request-meta"><span><small>SOLICITANTE</small><strong>${escapeHtml(request.employee)}</strong></span>${meta.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join("")}</div><div class="card-actions"><button class="button secondary" data-action="view-request" data-id="${request.id}">Ver detalle</button>${admin && canManagerResolveRequest(request) ? `<span class="muted">Requiere revisión</span>` : ""}</div></article>`;
+  const deleteAction = user.role === "admin" ? `<button class="button danger-soft" data-action="delete-request" data-id="${escapeHtml(request.id)}">Eliminar</button>` : "";
+  return `<article class="request-card"><div class="request-card-top"><span class="request-icon large">${request.type === "absence" ? "+" : "↔"}</span><div><span class="request-id">${escapeHtml(request.id)}</span><h3>${escapeHtml(requestTypes[request.type] || request.type)}</h3><p>${escapeHtml(request.detail)}</p></div><span class="badge ${request.status}">${escapeHtml(statusText[request.status] || request.status)}</span></div><div class="request-meta"><span><small>SOLICITANTE</small><strong>${escapeHtml(request.employee)}</strong></span>${meta.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join("")}</div><div class="card-actions"><button class="button secondary" data-action="view-request" data-id="${request.id}">Ver detalle</button>${deleteAction}${admin && canManagerResolveRequest(request) ? `<span class="muted">Requiere revisión</span>` : ""}</div></article>`;
 }
 
 function notificationsPage() {
@@ -1195,10 +1220,55 @@ function notificationsPage() {
     <section class="notification-list">${state.notifications.map((n) => `<button class="notification ${n.read ? "read" : ""}" data-action="read-notification" data-id="${n.id}"><span class="notification-symbol ${n.type}">${n.type === "alert" ? "!" : n.type === "schedule" ? "▤" : "↔"}</span><span><strong>${escapeHtml(n.title)}</strong><p>${escapeHtml(n.text)}</p><small>${escapeHtml(n.time)}</small></span>${n.read ? "" : `<i></i>`}</button>`).join("") || empty("No tenés notificaciones")}</section>`;
 }
 
+const auditActionLabels = {
+  assigned_employee: "Asignó una persona",
+  changed_week_status: "Cambió el estado de la grilla",
+  created_planning_week: "Creó una grilla operativa",
+  created_request: "Creó una solicitud",
+  created_user: "Creó un usuario",
+  deactivated_user: "Desactivó un usuario",
+  deleted_planning_week: "Eliminó una grilla operativa",
+  generated_planning_proposal: "Generó una propuesta",
+  removed_assignment: "Quitó una asignación",
+  removed_manual_day_off: "Quitó un franco manual",
+  removed_planning_exception: "Eliminó una excepción",
+  resolved_partner_request: "Respondió una solicitud de compañero",
+  resolved_request: "Resolvió una solicitud",
+  reactivated_user: "Reactivó un usuario",
+  reset_user_password: "Restableció un acceso",
+  revoked_request: "Revocó una solicitud",
+  set_manual_day_off: "Registró un franco manual",
+  updated_user_profile: "Actualizó un usuario",
+  upserted_planning_exception: "Actualizó una excepción",
+};
+
+const auditEntityLabels = {
+  planning_day_off: "Franco manual",
+  planning_exception: "Excepción semanal",
+  planning_position: "Puesto de la grilla",
+  planning_week: "Grilla operativa",
+  request: "Solicitud",
+  user: "Usuario",
+};
+
+function formatAuditDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("es-AR", { day: "numeric", month: "numeric", year: "numeric" }).format(date);
+}
+
+function auditElementLabel(entry) {
+  return entry.entityName || auditEntityLabels[entry.entityType] || entry.entity || "—";
+}
+
 function auditPage() {
   if (!canSeeAudit(user.role)) return dashboardPage();
-  return `${pageHeading("TRAZABILIDAD", "Auditoría", "Registro de las acciones relevantes del sistema.")}
-    <section class="table-card"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Elemento</th><th>Resultado</th></tr></thead><tbody>${state.auditLogs.map((a) => `<tr><td>${escapeHtml(a.time)}</td><td><strong>${escapeHtml(a.user)}</strong></td><td>${escapeHtml(a.action)}</td><td><span class="sector-pill">${escapeHtml(a.entity)}</span></td><td><span class="badge active">${escapeHtml(a.result)}</span></td></tr>`).join("")}</tbody></table></section>`;
+  const canDelete = canEditSchedule(user.role);
+  const rows = state.auditLogs.map((entry) => `<tr><td>${escapeHtml(formatAuditDate(entry.time))}</td><td><strong>${escapeHtml(entry.user || "Sistema")}</strong></td><td>${escapeHtml(auditActionLabels[entry.action] || entry.action || "Acción registrada")}</td><td><span class="sector-pill">${escapeHtml(auditElementLabel(entry))}</span>${canDelete ? `<button class="row-action danger" data-action="delete-audit-log" data-id="${escapeHtml(entry.id)}" aria-label="Eliminar movimiento de auditoría" title="Eliminar movimiento">Eliminar</button>` : ""}</td></tr>`).join("") || "<tr><td colspan=\"4\">No hay movimientos para mostrar.</td></tr>";
+  const resetAction = canDelete ? `<button class="button danger-soft" data-action="reset-audit-logs">Restablecer auditoría</button>` : "";
+  return `${pageHeading("TRAZABILIDAD", "Auditoría", "Registro de las acciones relevantes del sistema.", resetAction)}
+    <section class="table-card"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Elemento</th></tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
 function modal(content, variant = "", label = "Diálogo") {
@@ -1239,7 +1309,7 @@ function accountSessionModal() {
 }
 
 function ownPasswordChangeModal() {
-  modal(`<button class="modal-close" data-action="close-modal" aria-label="Cerrar">×</button><span class="eyebrow">SEGURIDAD DE LA CUENTA</span><h2>Cambiar contraseña</h2><p class="muted">Confirmá tu contraseña actual y definí una nueva para proteger tu acceso.</p><form id="own-password-change-form"><label>Contraseña actual<input name="currentPassword" type="password" autocomplete="current-password" required autofocus /></label><label>Nueva contraseña<input name="newPassword" type="password" minlength="10" autocomplete="new-password" required /></label><label>Confirmar nueva contraseña<input name="confirmPassword" type="password" minlength="10" autocomplete="new-password" required /></label><div class="week-form-note"><strong>Sesiones protegidas</strong><p>Usá al menos 10 caracteres. Al guardar se cerrarán las otras sesiones activas de tu cuenta.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="open-account-session">Volver</button><button class="button primary">Guardar contraseña</button></div></form>`, "account-modal", "Cambiar contraseña");
+  modal(`<button class="modal-close" data-action="close-modal" aria-label="Cerrar">×</button><span class="eyebrow">SEGURIDAD DE LA CUENTA</span><h2>Cambiar contraseña</h2><p class="muted">Confirmá tu contraseña actual y definí una nueva para proteger tu acceso.</p><form id="own-password-change-form"><label>Contraseña actual${passwordField("currentPassword", { autocomplete: "current-password", autofocus: true })}</label><label>Nueva contraseña${passwordField("newPassword", { autocomplete: "new-password", minLength: 10 })}</label><label>Confirmar nueva contraseña${passwordField("confirmPassword", { autocomplete: "new-password", minLength: 10 })}</label><div class="week-form-note"><strong>Sesiones protegidas</strong><p>Usá al menos 10 caracteres. Al guardar se cerrarán las otras sesiones activas de tu cuenta.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="open-account-session">Volver</button><button class="button primary">Guardar contraseña</button></div></form>`, "account-modal", "Cambiar contraseña");
 }
 
 function clearClientSession() {
@@ -1301,7 +1371,12 @@ function updateRequestFormSections(form) {
 
 function newRequestModal() {
   const activeEmployees = state.employees.filter((employee) => employee.status === "active" && employee.participaEnOperacion !== false && employee.id !== user.employeeId);
-  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">NUEVA SOLICITUD</span><h2>¿Qué necesitás gestionar?</h2><p class="muted">La solicitud quedará registrada con fecha y turno para automatización futura.</p><form id="request-form"><label>Tipo<select name="type" required>${Object.entries(requestTypes).map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></label><div data-request-section="single"><div class="form-row"><label>Fecha<input name="targetDate" type="date" /></label><label>Turno<select name="targetShift">${shiftOptions.map((shift) => `<option value="${shift}">${shift}</option>`).join("")}</select></label></div></div><div data-request-section="change" hidden><div class="form-row"><label>Fecha original<input name="originalDate" type="date" /></label><label>Turno original<select name="originalShift">${shiftOptions.map((shift) => `<option value="${shift}">${shift}</option>`).join("")}</select></label></div><div class="form-row"><label>Fecha propuesta<input name="proposedDate" type="date" /></label><label>Turno propuesto<select name="proposedShift">${shiftOptions.map((shift) => `<option value="${shift}">${shift}</option>`).join("")}</select></label></div><label>Compañero involucrado<select name="partnerEmployeeId"><option value="">Sin compañero</option>${activeEmployees.map((employee) => `<option value="${employee.id}">${escapeHtml(employee.name)} · ${escapeHtml(employee.role)}</option>`).join("")}</select></label></div><label>Motivo o detalle<textarea name="note" rows="3" placeholder="Contanos brevemente el motivo" required></textarea></label><label class="file-label">Certificado o respaldo (opcional)<input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png" /><span>Adjuntar archivo</span></label><div class="week-form-note"><strong>Datos para aprobación futura</strong><p>La aprobación todavía no modifica la grilla. Estos campos dejan preparada la solicitud para automatizar ese impacto más adelante.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">Enviar solicitud</button></div></form>`);
+  const managerCreated = canEditSchedule(user.role);
+  const availableRequestTypes = Object.entries(requestTypes).filter(([type]) => !managerCreated || type !== "shiftChange");
+  const note = managerCreated
+    ? `<div class="week-form-note"><strong>Aplicación inmediata</strong><p>Como Encargada, esta solicitud se aprueba automáticamente y actualiza la grilla de la semana afectada según las reglas operativas.</p></div>`
+    : `<div class="week-form-note"><strong>Datos para aprobación futura</strong><p>La solicitud queda pendiente de revisión de una Encargada antes de modificar la grilla.</p></div>`;
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">NUEVA SOLICITUD</span><h2>¿Qué necesitás gestionar?</h2><p class="muted">${managerCreated ? "Registrá un ajuste operativo para aplicarlo directamente." : "La solicitud quedará registrada con fecha y turno para su revisión."}</p><form id="request-form"><label>Tipo<select name="type" required>${availableRequestTypes.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></label><div data-request-section="single"><div class="form-row"><label>Fecha<input name="targetDate" type="date" /></label><label>Turno<select name="targetShift">${shiftOptions.map((shift) => `<option value="${shift}">${shift}</option>`).join("")}</select></label></div></div><div data-request-section="change" hidden><div class="form-row"><label>Fecha original<input name="originalDate" type="date" /></label><label>Turno original<select name="originalShift">${shiftOptions.map((shift) => `<option value="${shift}">${shift}</option>`).join("")}</select></label></div><div class="form-row"><label>Fecha propuesta<input name="proposedDate" type="date" /></label><label>Turno propuesto<select name="proposedShift">${shiftOptions.map((shift) => `<option value="${shift}">${shift}</option>`).join("")}</select></label></div><label>Compañero involucrado<select name="partnerEmployeeId"><option value="">Sin compañero</option>${activeEmployees.map((employee) => `<option value="${employee.id}">${escapeHtml(employee.name)} · ${escapeHtml(employee.role)}</option>`).join("")}</select></label></div><label>Motivo o detalle<textarea name="note" rows="3" placeholder="Contanos brevemente el motivo" required></textarea></label><label class="file-label">Certificado o respaldo (opcional)<input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png" /><span>Adjuntar archivo</span></label>${note}<div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${managerCreated ? "Aplicar solicitud" : "Enviar solicitud"}</button></div></form>`);
   updateRequestFormSections(document.querySelector("#request-form"));
 }
 
@@ -1403,22 +1478,22 @@ function userModal(targetUser = null, linkedEmployee = null) {
   const turno = employee?.turno || "";
   const piso = employee?.piso || "";
   const phone = employee?.phone || "";
-  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">${isEditing ? "EDITAR USUARIO" : "NUEVO USUARIO"}</span><h2>${isEditing ? "Editar usuario" : "Agregar usuario"}</h2><p class="muted">${isEditing ? "Los datos del perfil y el acceso se administran por separado." : "Se crea el acceso a la app con sus datos laborales en una sola operación."}</p><form id="user-form"><input type="hidden" name="userId" value="${escapeHtml(targetUser?.id || "")}" /><input type="hidden" name="employeeId" value="${escapeHtml(employee?.id || "")}" /><div class="form-row"><label>Usuario<input name="username" autocomplete="off" value="${escapeHtml(username)}" required /></label>${isEditing ? "" : `<label>Contraseña inicial<input name="password" type="password" minlength="10" autocomplete="new-password" required /></label>`}</div><label>Nombre completo<input name="name" value="${escapeHtml(name)}" required /></label><div class="form-row"><label>Rol del sistema<select name="systemRole" required>${systemRoleSelectOptions(systemRole)}</select></label><label>Rol dentro de la empresa<select name="companyRole" required>${companyRoleSelectOptions(companyRole)}</select></label></div><div class="form-row"><label>Sector<select name="sector">${sectorSelectOptions(sector)}</select></label><label>Turno<select name="turno">${shiftSelectOptions(turno)}</select></label></div><div class="form-row"><label>Piso<select name="piso">${floorSelectOptions(piso)}</select></label><label>Teléfono<input name="phone" value="${escapeHtml(phone)}" /></label></div><div class="week-form-note"><strong>Roles y acceso separados</strong><p>El rol del sistema define permisos. Para restablecer una contraseña usá la acción específica desde el directorio.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${isEditing ? "Guardar cambios" : "Guardar usuario"}</button></div></form>`);
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">${isEditing ? "EDITAR USUARIO" : "NUEVO USUARIO"}</span><h2>${isEditing ? "Editar usuario" : "Agregar usuario"}</h2><p class="muted">${isEditing ? "Los datos del perfil y el acceso se administran por separado." : "Se crea el acceso a la app con sus datos laborales en una sola operación."}</p><form id="user-form"><input type="hidden" name="userId" value="${escapeHtml(targetUser?.id || "")}" /><input type="hidden" name="employeeId" value="${escapeHtml(employee?.id || "")}" /><div class="form-row"><label>Usuario<input name="username" autocomplete="off" value="${escapeHtml(username)}" required /></label>${isEditing ? "" : `<label>Contraseña inicial${passwordField("password", { autocomplete: "new-password", minLength: 10 })}</label>`}</div><label>Nombre completo<input name="name" value="${escapeHtml(name)}" required /></label><div class="form-row"><label>Rol del sistema<select name="systemRole" required>${systemRoleSelectOptions(systemRole)}</select></label><label>Rol dentro de la empresa<select name="companyRole" required>${companyRoleSelectOptions(companyRole)}</select></label></div><div class="form-row"><label>Sector<select name="sector">${sectorSelectOptions(sector)}</select></label><label>Turno<select name="turno">${shiftSelectOptions(turno)}</select></label></div><div class="form-row"><label>Piso<select name="piso">${floorSelectOptions(piso)}</select></label><label>Teléfono<input name="phone" value="${escapeHtml(phone)}" /></label></div><div class="week-form-note"><strong>Roles y acceso separados</strong><p>El rol del sistema define permisos. Para restablecer una contraseña usá la acción específica desde el directorio.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${isEditing ? "Guardar cambios" : "Guardar usuario"}</button></div></form>`);
 }
 
 function resetUserPasswordModal(userId) {
   if (!canManageEmployees(user.role)) return toast("Solo Administración y Encargada pueden restablecer accesos.", "error");
   const targetUser = state.users.find((item) => item.id === userId);
   if (!targetUser) return toast("No se encontró el usuario.", "error");
-  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">RESTABLECER ACCESO</span><h2>${escapeHtml(targetUser.name || targetUser.username)}</h2><p class="muted">Definí una contraseña temporal. Se cerrarán sus sesiones y deberá crear una nueva al ingresar.</p><form id="reset-user-password-form"><input type="hidden" name="userId" value="${escapeHtml(targetUser.id)}" /><label>Contraseña temporal<input name="newPassword" type="password" minlength="10" autocomplete="new-password" required autofocus /></label><label>Confirmar contraseña<input name="confirmPassword" type="password" minlength="10" autocomplete="new-password" required /></label><label>Motivo <small class="muted">(opcional, quedará auditado)</small><textarea name="reason" rows="2" maxlength="240" placeholder="Ej.: restablecimiento solicitado por la persona"></textarea></label><div class="week-form-note"><strong>Acción sensible</strong><p>La contraseña no se registra ni se vuelve a mostrar en la aplicación.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button danger-soft">Restablecer acceso</button></div></form>`);
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">RESTABLECER ACCESO</span><h2>${escapeHtml(targetUser.name || targetUser.username)}</h2><p class="muted">Definí una contraseña temporal. Se cerrarán sus sesiones y deberá crear una nueva al ingresar.</p><form id="reset-user-password-form"><input type="hidden" name="userId" value="${escapeHtml(targetUser.id)}" /><label>Contraseña temporal${passwordField("newPassword", { autocomplete: "new-password", minLength: 10, autofocus: true })}</label><label>Confirmar contraseña${passwordField("confirmPassword", { autocomplete: "new-password", minLength: 10 })}</label><label>Motivo <small class="muted">(opcional, quedará auditado)</small><textarea name="reason" rows="2" maxlength="240" placeholder="Ej.: restablecimiento solicitado por la persona"></textarea></label><div class="week-form-note"><strong>Acción sensible</strong><p>La contraseña no se registra ni se vuelve a mostrar en la aplicación.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button danger-soft">Restablecer acceso</button></div></form>`);
 }
 
 function forcePasswordChangeModal() {
-  modal(`<span class="eyebrow">SEGURIDAD DE LA CUENTA</span><h2>Creá tu nueva contraseña</h2><p class="muted">Tu acceso fue restablecido. Para continuar necesitás reemplazar la contraseña temporal.</p><form id="force-password-change-form"><label>Contraseña temporal<input name="currentPassword" type="password" autocomplete="current-password" required autofocus /></label><label>Nueva contraseña<input name="newPassword" type="password" minlength="10" autocomplete="new-password" required /></label><label>Confirmar nueva contraseña<input name="confirmPassword" type="password" minlength="10" autocomplete="new-password" required /></label><div class="week-form-note"><strong>Requisito mínimo</strong><p>Usá al menos 10 caracteres. Al guardar se cerrarán las otras sesiones de tu cuenta.</p></div><div class="modal-actions"><button class="button primary">Guardar y continuar</button></div></form>`, "mandatory-modal", "Cambio obligatorio de contraseña");
+  modal(`<span class="eyebrow">SEGURIDAD DE LA CUENTA</span><h2>Creá tu nueva contraseña</h2><p class="muted">Tu acceso fue restablecido. Para continuar necesitás reemplazar la contraseña temporal.</p><form id="force-password-change-form"><label>Contraseña temporal${passwordField("currentPassword", { autocomplete: "current-password", autofocus: true })}</label><label>Nueva contraseña${passwordField("newPassword", { autocomplete: "new-password", minLength: 10 })}</label><label>Confirmar nueva contraseña${passwordField("confirmPassword", { autocomplete: "new-password", minLength: 10 })}</label><div class="week-form-note"><strong>Requisito mínimo</strong><p>Usá al menos 10 caracteres. Al guardar se cerrarán las otras sesiones de tu cuenta.</p></div><div class="modal-actions"><button class="button primary">Guardar y continuar</button></div></form>`, "mandatory-modal", "Cambio obligatorio de contraseña");
 }
 
 function newPlanningWeekModal() {
-  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">NUEVA SEMANA</span><h2>Crear semana de planificación</h2><p class="muted">Se creará la estructura operativa vacía en estado Borrador.</p><form id="planning-week-form"><label>Nombre o identificador<input name="name" placeholder="Ej: Semana del 6 al 12 de julio" required /></label><div class="form-row"><label>Fecha de inicio<input name="startDate" type="date" required /></label><label>Fecha de fin<input name="endDate" type="date" readonly required /></label></div><div class="week-form-note"><strong>Semana de 7 días</strong><p>Al elegir la fecha de inicio, la fecha de fin se calcula automáticamente 6 días después.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">Crear borrador</button></div></form>`);
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">NUEVA SEMANA</span><h2>Crear semana de planificación</h2><p class="muted">Se creará la estructura operativa vacía en estado Borrador.</p><form id="planning-week-form"><label>Nombre o identificador<input name="name" placeholder="Se completa al elegir la fecha" readonly required /></label><div class="form-row"><label>Fecha de inicio<input name="startDate" type="date" required /></label><label>Fecha de fin<input name="endDate" type="date" readonly required /></label></div><div class="week-form-note"><strong>Semana de 7 días</strong><p>Al elegir la fecha de inicio, el nombre y la fecha de fin se calculan automáticamente.</p></div><div class="modal-actions"><button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">Crear borrador</button></div></form>`);
 }
 
 function assignmentModal(positionId) {
@@ -1534,6 +1609,23 @@ function addIsoDays(value, amount) {
   const date = new Date(Date.UTC(year, month - 1, day + amount));
   return date.toISOString().slice(0, 10);
 }
+
+function planningWeekName(startDate) {
+  if (!startDate) return "";
+  const shortDate = (value) => {
+    const [, month, day] = value.split("-");
+    return `${Number(day)}/${Number(month)}`;
+  };
+  return `Grilla operativa del ${shortDate(startDate)} al ${shortDate(addIsoDays(startDate, 6))}`;
+}
+
+function syncPlanningWeekFields(form) {
+  const startDate = form.querySelector('input[name="startDate"]')?.value;
+  const endDateInput = form.querySelector('input[name="endDate"]');
+  const nameInput = form.querySelector('input[name="name"]');
+  if (endDateInput) endDateInput.value = startDate ? addIsoDays(startDate, 6) : "";
+  if (nameInput) nameInput.value = planningWeekName(startDate);
+}
 function formatDateTime(value) {
   if (!value) return "";
   return new Intl.DateTimeFormat("es-AR", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
@@ -1625,9 +1717,9 @@ document.addEventListener("submit", async (event) => {
       : `${formatIsoDate(scheduleImpact.target.date)} · ${scheduleImpact.target.shift}`;
     const status = isChange ? "pendingPartner" : "pendingManager";
     try {
-      await apiCommand("/api/requests", { type, note, partnerEmployeeId, scheduleImpact });
+      const result = await apiCommand("/api/requests", { type, note, partnerEmployeeId, scheduleImpact });
       closeModal();
-      toast("Solicitud enviada correctamente");
+      toast(result.autoApplied ? "Solicitud aprobada y grilla actualizada" : result.managerCreated ? "Solicitud aprobada. Revisá la grilla para completar el ajuste." : "Solicitud enviada correctamente");
     } catch (error) { toast(error.message, "error"); }
   }
   if (event.target.id === "request-revoke-form") {
@@ -1647,10 +1739,10 @@ document.addEventListener("submit", async (event) => {
   if (event.target.id === "planning-week-form") {
     if (!canEditSchedule(user.role)) return;
     const data = new FormData(event.target);
-    const name = data.get("name").trim();
     const startDate = data.get("startDate");
+    if (!startDate) return toast("Seleccioná la fecha de inicio.", "error");
+    const name = planningWeekName(startDate);
     const endDate = addIsoDays(startDate, 6);
-    if (!name) return toast("Ingresá un nombre para la semana.", "error");
     if (data.get("endDate") && data.get("endDate") !== endDate) return toast("La semana debe durar exactamente 7 días.", "error");
     try {
       await apiCommand("/api/planning/weeks", { name, startDate });
@@ -1770,8 +1862,7 @@ document.addEventListener("submit", async (event) => {
 document.addEventListener("input", (event) => {
   if (event.target.id === "employee-search") { employeeSearch = event.target.value; render(); document.querySelector("#employee-search")?.focus(); }
   if (event.target.name === "startDate" && event.target.closest("#planning-week-form")) {
-    const endDateInput = event.target.form.querySelector('input[name="endDate"]');
-    endDateInput.value = event.target.value ? addIsoDays(event.target.value, 6) : "";
+    syncPlanningWeekFields(event.target.form);
   }
   if (event.target.closest("#week-exception-form") && ["date", "shift", "positionId"].includes(event.target.name)) {
     updateExceptionPositionOptions(event.target.form);
@@ -1795,8 +1886,7 @@ document.addEventListener("change", (event) => {
     return;
   }
   if (event.target.name === "startDate" && event.target.closest("#planning-week-form")) {
-    const endDateInput = event.target.form.querySelector('input[name="endDate"]');
-    endDateInput.value = event.target.value ? addIsoDays(event.target.value, 6) : "";
+    syncPlanningWeekFields(event.target.form);
   }
   if (event.target.closest("#week-exception-form") && ["date", "shift"].includes(event.target.name)) {
     updateExceptionPositionOptions(event.target.form);
@@ -1841,7 +1931,16 @@ document.addEventListener("click", async (event) => {
     try { await apiCommand("/api/notifications/read", { notificationId: button.dataset.id }); } catch (error) { toast(error.message, "error"); render(); }
     return;
   }
-  if (action === "toggle-password") { const input = document.querySelector('input[name="password"]'); input.type = input.type === "password" ? "text" : "password"; button.textContent = input.type === "password" ? "Ver" : "Ocultar"; }
+  if (action === "toggle-password") {
+    const input = button.closest(".password-field")?.querySelector("input");
+    if (!input) return;
+    const visible = input.type === "password";
+    input.type = visible ? "text" : "password";
+    button.innerHTML = passwordEyeIcon(visible);
+    button.setAttribute("aria-label", visible ? "Ocultar contraseña" : "Mostrar contraseña");
+    button.setAttribute("title", visible ? "Ocultar contraseña" : "Mostrar contraseña");
+    button.setAttribute("aria-pressed", String(visible));
+  }
   if (action === "confirm-logout") accountSessionModal();
   if (action === "open-account-session") { closeModal(); accountSessionModal(); }
   if (action === "open-own-password-change") { closeModal(); ownPasswordChangeModal(); }
@@ -1892,9 +1991,39 @@ document.addEventListener("click", async (event) => {
     }
   }
   if (action === "new-request") newRequestModal();
+  if (action === "delete-request") {
+    if (user.role !== "admin") return toast("Solo Administración principal puede eliminar solicitudes.", "error");
+    const request = state.requests.find((item) => item.id === button.dataset.id);
+    if (!request) return toast("No se encontró la solicitud.", "error");
+    if (!confirm("¿Eliminar esta solicitud? Si ya produjo un ajuste operativo, la grilla no se revertirá automáticamente.")) return;
+    try {
+      await apiCommand(`/api/requests/${encodeURIComponent(request.id)}`, null, "DELETE", {}, true, { title: "Eliminando solicitud", message: "Estamos actualizando el historial de solicitudes de forma segura." });
+      toast("Solicitud eliminada");
+    } catch (error) { toast(error.message, "error"); }
+  }
   if (action === "view-request") requestDetailModal(button.dataset.id);
   if (action === "open-revoke-request") revokeRequestModal(button.dataset.id);
   if (action === "new-user") newUserModal();
+  if (action === "delete-audit-log") {
+    if (!canEditSchedule(user.role)) return toast("Tu perfil no puede eliminar movimientos de auditoría.", "error");
+    const entry = state.auditLogs.find((item) => item.id === button.dataset.id);
+    if (!entry) return toast("No se encontró el movimiento de auditoría.", "error");
+    if (!confirm(`¿Eliminar el movimiento “${entry.action}”? Esta acción no se puede deshacer.`)) return;
+    try {
+      await apiCommand(`/api/audit-logs/${encodeURIComponent(entry.id)}`, null, "DELETE", {}, true, { title: "Eliminando movimiento", message: "Estamos actualizando la auditoría de forma segura." });
+      toast("Movimiento eliminado de la auditoría");
+    } catch (error) { toast(error.message, "error"); }
+  }
+  if (action === "reset-audit-logs") {
+    if (!canEditSchedule(user.role)) return toast("Tu perfil no puede restablecer la auditoría.", "error");
+    const count = state.auditLogs.length;
+    if (!count) return toast("La auditoría ya está vacía.");
+    if (!confirm(`¿Restablecer la auditoría? Se eliminarán definitivamente los ${count} movimientos registrados.`)) return;
+    try {
+      const result = await apiCommand("/api/audit-logs", null, "DELETE", {}, true, { title: "Restableciendo auditoría", message: "Estamos eliminando los movimientos de prueba de forma segura." });
+      toast(`Auditoría restablecida: ${result.deletedCount} movimientos eliminados`);
+    } catch (error) { toast(error.message, "error"); }
+  }
   if (action === "edit-user") editUserModal(button.dataset.id);
   if (action === "reset-user-password") resetUserPasswordModal(button.dataset.id);
   if (action === "create-user-for-employee") createUserForEmployeeModal(button.dataset.employeeId);
