@@ -12,6 +12,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
     DATA_DIR=/app/data
 
-EXPOSE 53123
+EXPOSE 8080
 
-CMD ["python", "server.py"]
+# Ejecuta las migraciones antes de iniciar el servidor
+RUN mkdir -p /app/data
+
+CMD ["sh", "-c", "python scripts/migrate_postgres.py && python server.py"]
+
