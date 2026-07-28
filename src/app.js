@@ -4,7 +4,7 @@ import { showToast } from "./ui/feedback.js?v=20260726-01";
 import { closeModal as closeModalUi, openModal } from "./ui/modal.js?v=20260726-01";
 import { canEditApplications, canEditSchedule, canManageEmployees, canResolveRequests, canSeeAudit, isAdminRole, roleLabel } from "./services/permissions.js?v=20260728-06";
 import { createDraftPlanningWeek, ensureKitchenPlanningSlots } from "./services/planningWeeks.js?v=20260716-1";
-import { applyApprovedAbsenceOrLeave, applyApprovedShiftChange, buildDailyDaysOffSummary, buildWeeklyAvailabilityMap } from "./services/planningEngine.js?v=20260717-6";
+import { applyApprovedAbsenceOrLeave, applyApprovedShiftChange, buildDailyDaysOffSummary, buildWeeklyAvailabilityMap } from "./services/planningEngine.js?v=20260728-01";
 
 const SESSION_KEY = "uzumaki-user-v5";
 let user = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null");
@@ -930,7 +930,7 @@ function detectPlanningConflicts(week) {
   (week.assignments || []).forEach((assignment) => {
     const position = positionsById.get(assignment.positionId);
     if (!position) return;
-    const key = `${position.date}:${assignment.employeeId}`;
+    const key = `${position.date}:${position.shift}:${assignment.employeeId}`;
     if (!assignmentsByDayEmployee.has(key)) assignmentsByDayEmployee.set(key, []);
     assignmentsByDayEmployee.get(key).push({ assignment, position });
   });
@@ -939,8 +939,8 @@ function detectPlanningConflicts(week) {
     if (records.length < 2) return;
     const employee = employeesById.get(records[0].assignment.employeeId);
     counts.duplicateAssignment += 1;
-    records.forEach(({ position }) => addPositionWarning(position.id, "Duplicado mismo día"));
-    items.push({ type: "duplicateAssignment", text: `${formatIsoDate(records[0].position.date)} · ${employee?.name || "Empleado"} figura ${records.length} veces en el mismo día.` });
+    records.forEach(({ position }) => addPositionWarning(position.id, "Duplicado en el mismo turno"));
+    items.push({ type: "duplicateAssignment", text: `${formatIsoDate(records[0].position.date)} · ${employee?.name || "Empleado"} figura ${records.length} veces en el turno ${records[0].position.shift}.` });
   });
 
   (week.assignments || []).forEach((assignment) => {
@@ -981,7 +981,7 @@ function planningConflictPanel(conflicts) {
     ["Pisos sin cobertura", conflicts.counts.uncoveredFloor],
   ];
   return `<section class="planning-conflict-panel warning" aria-label="Advertencias de la grilla">
-    <div class="planning-conflict-head"><span>!</span><div><strong>Advertencias de la grilla</strong><p>Los puestos sin asignar y pisos sin cobertura no bloquean la publicación. Solo se bloquea una persona repetida dentro del mismo día.</p></div></div>
+    <div class="planning-conflict-head"><span>!</span><div><strong>Advertencias de la grilla</strong><p>Los puestos sin asignar y pisos sin cobertura no bloquean la publicación. Solo se bloquea una persona repetida en el mismo turno.</p></div></div>
     <div class="planning-conflict-summary">${summary.map(([label, count]) => `<span><b>${count}</b><small>${label}</small></span>`).join("")}</div>
     <ul>${conflicts.items.slice(0, 8).map((item) => `<li>${item.text}</li>`).join("")}${conflicts.items.length > 8 ? `<li>+ ${conflicts.items.length - 8} advertencias más en la grilla.</li>` : ""}</ul>
   </section>`;
@@ -992,7 +992,7 @@ async function publishPlanningWeek() {
   if (!week || !["draft", "paused"].includes(week.status) || !canEditSchedule(user.role)) return;
   const conflicts = detectPlanningConflicts(week);
   if (conflicts.counts.duplicateAssignment) {
-    return toast(`No se puede publicar: corregí ${conflicts.counts.duplicateAssignment} duplicado(s) dentro del mismo día.`, "error");
+    return toast(`No se puede publicar: corregí ${conflicts.counts.duplicateAssignment} duplicado(s) dentro del mismo turno.`, "error");
   }
   try {
     const wasPaused = week.status === "paused";
@@ -1503,7 +1503,7 @@ function assignmentModal(positionId) {
   if (!position) return;
   const assignment = week.assignments.find((item) => item.positionId === positionId);
   const availableEmployees = state.employees.filter((employee) => employee.status === "active" && employee.participaEnOperacion !== false);
-  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">ASIGNACIÓN MANUAL</span><h2>${position.label}</h2><p class="muted">${formatIsoDate(position.date)} · Turno ${position.shift} · ${position.sector}</p><form id="position-assignment-form"><input type="hidden" name="positionId" value="${position.id}" /><label>Empleado<select name="employeeId" required><option value="">Seleccionar empleado</option>${availableEmployees.map((employee) => `<option value="${employee.id}" ${assignment?.employeeId === employee.id ? "selected" : ""}>${employee.name} · ${employee.role}</option>`).join("")}</select></label><div class="week-form-note"><strong>Asignación manual</strong><p>La lista muestra el equipo activo. La aplicación bloquea dobles asignaciones en el mismo día.</p></div><div class="modal-actions">${assignment ? `<button type="button" class="button danger-soft" data-action="remove-planning-assignment" data-position-id="${position.id}">Quitar asignación</button>` : ""}<button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${assignment ? "Cambiar empleado" : "Asignar empleado"}</button></div></form>`, "assignment-drawer");
+  modal(`<button class="modal-close" data-action="close-modal">×</button><span class="eyebrow">ASIGNACIÓN MANUAL</span><h2>${position.label}</h2><p class="muted">${formatIsoDate(position.date)} · Turno ${position.shift} · ${position.sector}</p><form id="position-assignment-form"><input type="hidden" name="positionId" value="${position.id}" /><label>Empleado<select name="employeeId" required><option value="">Seleccionar empleado</option>${availableEmployees.map((employee) => `<option value="${employee.id}" ${assignment?.employeeId === employee.id ? "selected" : ""}>${employee.name} · ${employee.role}</option>`).join("")}</select></label><div class="week-form-note"><strong>Asignación manual</strong><p>Una persona puede trabajar mañana y tarde el mismo día, pero no ocupar dos puestos en el mismo turno.</p></div><div class="modal-actions">${assignment ? `<button type="button" class="button danger-soft" data-action="remove-planning-assignment" data-position-id="${position.id}">Quitar asignación</button>` : ""}<button type="button" class="button secondary" data-action="close-modal">Cancelar</button><button class="button primary">${assignment ? "Cambiar empleado" : "Asignar empleado"}</button></div></form>`, "assignment-drawer");
 }
 
 function dayOffModal({ sector, date }) {
@@ -1643,7 +1643,7 @@ function hasSameDayAssignment(week, position, employeeId) {
   return (week.assignments || []).some((assignment) => {
     if (assignment.positionId === position.id || assignment.employeeId !== employeeId) return false;
     const assignedPosition = week.operationalPositions.find((item) => item.id === assignment.positionId);
-    return assignedPosition?.date === position.date;
+    return assignedPosition?.date === position.date && assignedPosition.shift === position.shift;
   });
 }
 function unreadCount() { return state.notifications.filter((n) => !n.read).length; }
@@ -1760,7 +1760,7 @@ document.addEventListener("submit", async (event) => {
     const position = week.operationalPositions.find((item) => item.id === positionId);
     const employee = state.employees.find((item) => item.id === employeeId && item.status === "active" && item.participaEnOperacion !== false);
     if (!position || !employee) return toast("No se pudo guardar la asignación.", "error");
-    if (hasSameDayAssignment(week, position, employeeId)) return toast(`${employee.name} ya está asignado ese día.`, "error");
+    if (hasSameDayAssignment(week, position, employeeId)) return toast(`${employee.name} ya está asignado en el turno ${position.shift}.`, "error");
     try {
       await apiCommand("/api/planning/assignments", { weekId: week.id, positionId, employeeId, version: week.version });
       closeModal();

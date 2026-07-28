@@ -678,7 +678,7 @@ class Database:
             cur.execute("SELECT * FROM planning_weeks WHERE id=%s FOR UPDATE", (week_id,)); week=cur.fetchone()
             if not week: raise DomainError("Semana inexistente.",404,"notFound")
             if expected_version is not None and expected_version != week["version"]: raise DomainError("La semana fue modificada por otra persona. Recargá la grilla.",409,"versionConflict")
-            cur.execute("SELECT id,date FROM planning_positions WHERE id=%s AND planning_week_id=%s",(position_id,week_id)); pos=cur.fetchone()
+            cur.execute("SELECT id,date,shift_id FROM planning_positions WHERE id=%s AND planning_week_id=%s",(position_id,week_id)); pos=cur.fetchone()
             cur.execute("""SELECT e.id,e.name,fc.anchor_date,fc.anchor_type,fc.cycle_length_days FROM employees e
                 LEFT JOIN employee_franco_cycles fc ON fc.employee_id=e.id
                 WHERE e.id=%s AND e.status='active' AND e.participates_in_operation=TRUE""",(employee_id,)); emp=cur.fetchone()
@@ -690,8 +690,12 @@ class Database:
             cur.execute("""SELECT 1 FROM requests WHERE employee_id=%s AND status='approved' AND type IN ('absence','leave','vacation','vacations')
                 AND COALESCE(start_date,target_date) <= %s AND COALESCE(end_date,start_date,target_date) >= %s""", (employee_id,pos["date"],pos["date"]))
             if cur.fetchone(): raise DomainError("La persona tiene una ausencia o licencia aprobada para esa fecha.",409,"unavailable")
-            cur.execute("SELECT id FROM planning_assignments WHERE planning_week_id=%s AND employee_id=%s AND assignment_date=%s AND position_id<>%s",(week_id,employee_id,pos["date"],position_id))
-            if cur.fetchone(): raise DomainError("La persona ya está asignada ese día.",409,"duplicateAssignment")
+            cur.execute("""SELECT a.id FROM planning_assignments a
+                           JOIN planning_positions assigned_position ON assigned_position.id=a.position_id
+                           WHERE a.planning_week_id=%s AND a.employee_id=%s AND a.assignment_date=%s
+                             AND assigned_position.shift_id=%s AND a.position_id<>%s""",
+                        (week_id,employee_id,pos["date"],pos["shift_id"],position_id))
+            if cur.fetchone(): raise DomainError("La persona ya está asignada en ese turno.",409,"duplicateAssignment")
             cur.execute("SELECT id FROM planning_assignments WHERE position_id=%s",(position_id,)); existing=cur.fetchone()
             if existing:
                 # Una edición desde la grilla pasa a ser una decisión humana y
@@ -814,8 +818,12 @@ class Database:
             if cover_id:
                 cur.execute("SELECT id FROM employees WHERE id=%s AND status='active' AND participates_in_operation=TRUE", (cover_id,))
                 if not cur.fetchone(): raise DomainError("La persona de cobertura no está disponible.", 409, "unavailable")
-                cur.execute("SELECT 1 FROM planning_assignments WHERE planning_week_id=%s AND employee_id=%s AND assignment_date=%s", (week_id, cover_id, position["date"]))
-                if cur.fetchone(): raise DomainError("La persona de cobertura ya tiene una asignación ese día.", 409, "duplicateAssignment")
+                cur.execute("""SELECT 1 FROM planning_assignments a
+                               JOIN planning_positions assigned_position ON assigned_position.id=a.position_id
+                               WHERE a.planning_week_id=%s AND a.employee_id=%s AND a.assignment_date=%s
+                                 AND assigned_position.shift_id=%s""",
+                            (week_id, cover_id, position["date"], position["shift_id"]))
+                if cur.fetchone(): raise DomainError("La persona de cobertura ya tiene una asignación en ese turno.", 409, "duplicateAssignment")
             cur.execute("""INSERT INTO planning_exceptions (id,planning_week_id,position_id,date,shift_id,sector_id,affected_employee_id,cover_employee_id,type,note,created_by,updated_by)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO UPDATE SET position_id=EXCLUDED.position_id,date=EXCLUDED.date,shift_id=EXCLUDED.shift_id,sector_id=EXCLUDED.sector_id,

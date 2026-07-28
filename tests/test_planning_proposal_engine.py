@@ -91,7 +91,12 @@ class PlanningProposalEngineTests(unittest.TestCase):
         result = proposal(employees=[worker], positions=[position("p1", "kitchen-a", "2026-07-21")], approvedRequests=[request])
         self.assertEqual(result["assignments"], [])
 
-    def test_duplicate_same_day_is_not_generated(self):
+    def test_same_employee_can_be_generated_in_morning_and_afternoon(self):
+        worker = employee("emp-a", "kitchen-a")
+        result = proposal(employees=[worker], positions=[position("p1", "kitchen-a", "2026-07-21"), position("p2", "kitchen-a", "2026-07-21", shift="Tarde")])
+        self.assertEqual(len(result["assignments"]), 2)
+
+    def test_duplicate_same_shift_is_not_generated(self):
         worker = employee("emp-a", "kitchen-a")
         result = proposal(employees=[worker], positions=[position("p1", "kitchen-a", "2026-07-21"), position("p2", "kitchen-a", "2026-07-21")])
         self.assertEqual(len(result["assignments"]), 1)

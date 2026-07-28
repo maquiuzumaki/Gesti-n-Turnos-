@@ -81,14 +81,14 @@ def build_availability(employees, dates, manual_days_off, exceptions, requests):
 
 
 def _indexes(positions_by_id, assignments):
-    occupied, assigned_by_day = set(), set()
+    occupied, assigned_by_shift = set(), set()
     for assignment in assignments:
         position = positions_by_id.get(assignment.get("positionId"))
         if not position or not assignment.get("employeeId"):
             continue
         occupied.add(position["id"])
-        assigned_by_day.add((position["date"], assignment["employeeId"]))
-    return occupied, assigned_by_day
+        assigned_by_shift.add((position["date"], position.get("shift"), assignment["employeeId"]))
+    return occupied, assigned_by_shift
 
 
 def _priority(week_start):
@@ -134,8 +134,8 @@ def generate_planning_proposal(payload):
     dates = sorted({position["date"] for position in positions})
     manual_days_off = {(item["employeeId"], item["date"]) for item in payload.get("manualDaysOff", [])}
     available = build_availability(employees, dates, manual_days_off, exceptions, requests)
-    occupied, assigned_by_day = _indexes(positions_by_id, current)
-    _, preserved_by_day = _indexes(positions_by_id, current)
+    occupied, assigned_by_shift = _indexes(positions_by_id, current)
+    _, preserved_by_shift = _indexes(positions_by_id, current)
     assignments, skipped, uncovered = [], [], []
 
     # Titulares habituales.
@@ -146,13 +146,13 @@ def generate_planning_proposal(payload):
         employee = by_template.get(position.get("templateId"))
         if not employee or not _operational(employee) or not available[employee["id"]][position["date"]][0]:
             continue
-        key = (position["date"], employee["id"])
-        if key in assigned_by_day:
+        key = (position["date"], position.get("shift"), employee["id"])
+        if key in assigned_by_shift:
             continue
         proposal = {"positionId": position["id"], "employeeId": employee["id"], "generated": True, "generationReason": "habitualPosition", "assignmentType": "regular", "generatedAt": generated_at}
         assignments.append(proposal)
         occupied.add(position["id"])
-        assigned_by_day.add(key)
+        assigned_by_shift.add(key)
 
     # Excepción Gustavo/Julio: sustituye la propuesta habitual de Gustavo por
     # una cobertura de la tarde de Julio cuando este no está disponible.
@@ -165,23 +165,23 @@ def generate_planning_proposal(payload):
         if not _operational(gustavo) or not available.get(GUSTAVO_EMPLOYEE_ID, {}).get(target_date, (False,))[0]:
             skipped.append({"date": target_date, "reason": "gustavoUnavailable"})
             continue
-        if julio_position["id"] in occupied or (target_date, GUSTAVO_EMPLOYEE_ID) in preserved_by_day:
+        if julio_position["id"] in occupied or (target_date, julio_position.get("shift"), GUSTAVO_EMPLOYEE_ID) in preserved_by_shift:
             skipped.append({"date": target_date, "reason": "targetOccupiedOrDuplicate"})
             continue
         assignments[:] = [item for item in assignments if not (item["employeeId"] == GUSTAVO_EMPLOYEE_ID and positions_by_id[item["positionId"]].get("templateId") == GUSTAVO_MORNING_TEMPLATE_ID and positions_by_id[item["positionId"]]["date"] == target_date)]
         occupied.discard(gustavo_position["id"])
-        assigned_by_day.discard((target_date, GUSTAVO_EMPLOYEE_ID))
+        assigned_by_shift.discard((target_date, gustavo_position.get("shift"), GUSTAVO_EMPLOYEE_ID))
         proposal = {"positionId": julio_position["id"], "employeeId": GUSTAVO_EMPLOYEE_ID, "generated": True, "generationReason": "gustavoCoversJulio", "assignmentType": "coverage", "coverageReason": "gustavoCoversJulio", "coveredEmployeeId": JULIO_EMPLOYEE_ID, "sourcePositionTemplateId": GUSTAVO_MORNING_TEMPLATE_ID, "targetPositionTemplateId": JULIO_AFTERNOON_TEMPLATE_ID, "generatedAt": generated_at}
         assignments.append(proposal)
         occupied.add(julio_position["id"])
-        assigned_by_day.add((target_date, GUSTAVO_EMPLOYEE_ID))
+        assigned_by_shift.add((target_date, julio_position.get("shift"), GUSTAVO_EMPLOYEE_ID))
 
     # Cobertura de Pisos por franqueras, priorizada semanalmente e histórico.
     priority = _priority(week["startDate"])
     for position in positions:
         if position.get("templateId") not in FLOOR_TEMPLATE_IDS or position["id"] in occupied:
             continue
-        candidates = [employees_by_id[item] for item in FLOOR_COVERERS if item in employees_by_id and _operational(employees_by_id[item]) and available[item][position["date"]][0] and (position["date"], item) not in assigned_by_day]
+        candidates = [employees_by_id[item] for item in FLOOR_COVERERS if item in employees_by_id and _operational(employees_by_id[item]) and available[item][position["date"]][0] and (position["date"], position.get("shift"), item) not in assigned_by_shift]
         candidates.sort(key=lambda item: (item["id"] != priority.get(position.get("shift")), -_floor_history_score(history, item["id"], position), item["id"]))
         if not candidates:
             uncovered.append({"positionId": position["id"], "date": position["date"], "shift": position.get("shift"), "templateId": position.get("templateId"), "label": position.get("label"), "reason": "noAvailableFloorCoverer"})
@@ -191,7 +191,7 @@ def generate_planning_proposal(payload):
         proposal = {"positionId": position["id"], "employeeId": coverer["id"], "generated": True, "generationReason": "floorCoverage", "assignmentType": "coverage", "coverageReason": "habitualEmployeeUnavailable", "coveredPositionTemplateId": position.get("templateId"), "coveredEmployeeId": habitual.get("id") if habitual else None, "generatedAt": generated_at}
         assignments.append(proposal)
         occupied.add(position["id"])
-        assigned_by_day.add((position["date"], coverer["id"]))
+        assigned_by_shift.add((position["date"], position.get("shift"), coverer["id"]))
 
     # Apoyo de cocina únicamente con Pisos completo y una franquera libre.
     gap_dates = {item["date"] for item in uncovered}
@@ -200,7 +200,7 @@ def generate_planning_proposal(payload):
         support = next((p for p in positions if p["date"] == target_date and p.get("templateId") == KITCHEN_MORNING_TEMPLATE_ID), None)
         if target_date in gap_dates or not floor_positions or not all(p["id"] in occupied for p in floor_positions) or not support or support["id"] in occupied:
             continue
-        candidates = [employees_by_id[item] for item in FLOOR_COVERERS if item in employees_by_id and _operational(employees_by_id[item]) and available[item][target_date][0] and (target_date, item) not in assigned_by_day]
+        candidates = [employees_by_id[item] for item in FLOOR_COVERERS if item in employees_by_id and _operational(employees_by_id[item]) and available[item][target_date][0] and (target_date, support.get("shift"), item) not in assigned_by_shift]
         candidates.sort(key=lambda item: (-_kitchen_history_score(history, item["id"]), item["id"]))
         if not candidates:
             continue
@@ -208,7 +208,7 @@ def generate_planning_proposal(payload):
         proposal = {"positionId": support["id"], "employeeId": collaborator["id"], "generated": True, "generationReason": "kitchenMorningCollaboration", "assignmentType": "collaboration", "collaborationArea": "kitchen", "collaborationShift": "morning", "generatedAt": generated_at}
         assignments.append(proposal)
         occupied.add(support["id"])
-        assigned_by_day.add((target_date, collaborator["id"]))
+        assigned_by_shift.add((target_date, support.get("shift"), collaborator["id"]))
 
     calculated_days_off = [
         {"employeeId": employee["id"], "date": target_date, "type": cycle_day_off((employee.get("francoCycle") or {}).get("anchorDate"), (employee.get("francoCycle") or {}).get("anchorType"), target_date, (employee.get("francoCycle") or {}).get("cycleLengthDays", 15)), "source": "calculatedCycle"}

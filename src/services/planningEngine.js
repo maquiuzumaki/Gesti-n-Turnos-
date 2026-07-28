@@ -267,9 +267,9 @@ export function generateHabitualAssignments({ week = null, employees = [], avail
   if (!week || !Array.isArray(week.operationalPositions)) return [];
   const positionsById = new Map(week.operationalPositions.map((position) => [position.id, position]));
   const occupiedPositions = new Set((week.assignments || []).map((assignment) => assignment.positionId));
-  const assignedByDay = new Set((week.assignments || []).flatMap((assignment) => {
+  const assignedByShift = new Set((week.assignments || []).flatMap((assignment) => {
     const position = positionsById.get(assignment.positionId);
-    return position?.date ? [`${position.date}:${assignment.employeeId}`] : [];
+    return position?.date ? [`${position.date}:${position.shift}:${assignment.employeeId}`] : [];
   }));
   const proposals = [];
 
@@ -278,8 +278,8 @@ export function generateHabitualAssignments({ week = null, employees = [], avail
     const employee = getHabitualEmployeeForPosition(employees, position);
     if (!employee || employee.status !== "active" || employee.participaEnOperacion === false) return;
     if (availabilityMap[employee.id]?.[position.date]?.available !== true) return;
-    const dailyKey = `${position.date}:${employee.id}`;
-    if (assignedByDay.has(dailyKey)) return;
+    const shiftKey = `${position.date}:${position.shift}:${employee.id}`;
+    if (assignedByShift.has(shiftKey)) return;
     proposals.push({
       positionId: position.id,
       employeeId: employee.id,
@@ -287,7 +287,7 @@ export function generateHabitualAssignments({ week = null, employees = [], avail
       generationReason: "habitualPosition",
     });
     occupiedPositions.add(position.id);
-    assignedByDay.add(dailyKey);
+    assignedByShift.add(shiftKey);
   });
 
   return proposals;
@@ -344,7 +344,7 @@ export function applyGustavoJulioException({
       removedAssignments.push({ ...removed, removedReason: "gustavoCoversJulio" });
     }
     const indexes = assignmentIndexes(week, adjustedAssignments);
-    if (indexes.occupiedPositions.has(targetPosition.id) || indexes.assignedByDay.has(`${date}:${GUSTAVO_EMPLOYEE_ID}`)) {
+    if (indexes.occupiedPositions.has(targetPosition.id) || indexes.assignedByDay.has(`${date}:${targetPosition.shift}:${GUSTAVO_EMPLOYEE_ID}`)) {
       skipped.push({ date, reason: "targetOccupiedOrDuplicate" });
       return;
     }
@@ -379,7 +379,7 @@ function assignmentIndexes(week = null, extraAssignments = []) {
   const records = assignmentRecordsForWeek(week, extraAssignments);
   return records.reduce((indexes, { assignment, position }) => {
     indexes.occupiedPositions.add(position.id);
-    if (position.date) indexes.assignedByDay.add(`${position.date}:${assignment.employeeId}`);
+    if (position.date) indexes.assignedByDay.add(`${position.date}:${position.shift}:${assignment.employeeId}`);
     return indexes;
   }, { occupiedPositions: new Set(), assignedByDay: new Set() });
 }
@@ -458,7 +458,7 @@ export function generateFloorCoverageAssignments({
     const candidates = coverers.filter((employee) => {
       if (employee.status !== "active" || employee.participaEnOperacion === false) return false;
       if (availabilityMap[employee.id]?.[position.date]?.available !== true) return false;
-      return !indexes.assignedByDay.has(`${position.date}:${employee.id}`);
+      return !indexes.assignedByDay.has(`${position.date}:${position.shift}:${employee.id}`);
     });
     const coverer = chooseFloorCoverer({ candidates, position, weeklySchedules, priority });
     if (!coverer) {
@@ -487,7 +487,7 @@ export function generateFloorCoverageAssignments({
     };
     assignments.push(proposal);
     indexes.occupiedPositions.add(position.id);
-    indexes.assignedByDay.add(`${position.date}:${coverer.id}`);
+    indexes.assignedByDay.add(`${position.date}:${position.shift}:${coverer.id}`);
   });
 
   return { assignments, uncovered };
@@ -542,7 +542,7 @@ export function generateKitchenMorningCollaborationAssignments({
     const candidates = coverers.filter((employee) => {
       if (employee.status !== "active" || employee.participaEnOperacion === false) return false;
       if (availabilityMap[employee.id]?.[date]?.available !== true) return false;
-      return !indexes.assignedByDay.has(`${date}:${employee.id}`);
+      return !indexes.assignedByDay.has(`${date}:${position.shift}:${employee.id}`);
     });
     const collaborator = chooseKitchenCollaborator({ candidates, weeklySchedules });
     if (!collaborator) return;
@@ -559,7 +559,7 @@ export function generateKitchenMorningCollaborationAssignments({
     };
     assignments.push(proposal);
     indexes.occupiedPositions.add(position.id);
-    indexes.assignedByDay.add(`${date}:${collaborator.id}`);
+    indexes.assignedByDay.add(`${date}:${position.shift}:${collaborator.id}`);
   });
 
   return assignments;
@@ -569,7 +569,7 @@ function sameDayDuplicate(week, position, employeeId) {
   return (week.assignments || []).some((assignment) => {
     if (assignment.positionId === position.id || assignment.employeeId !== employeeId) return false;
     const assignedPosition = week.operationalPositions.find((item) => item.id === assignment.positionId);
-    return assignedPosition?.date === position.date;
+    return assignedPosition?.date === position.date && assignedPosition.shift === position.shift;
   });
 }
 
@@ -590,7 +590,7 @@ function hasDuplicateAfterChange(week, position, employeeId, excludedPositionIds
   return (week.assignments || []).some((assignment) => {
     if (assignment.employeeId !== employeeId || excludedPositionIds.includes(assignment.positionId)) return false;
     const assignedPosition = week.operationalPositions.find((item) => item.id === assignment.positionId);
-    return assignedPosition?.date === position.date;
+    return assignedPosition?.date === position.date && assignedPosition.shift === position.shift;
   });
 }
 
@@ -627,7 +627,7 @@ export function applyApprovedAbsenceOrLeave({ week, request, coverEmployeeId, ap
     return { ok: false, message: "No se encontró el puesto original afectado en la planificación." };
   }
   if (sameDayDuplicate(week, sourceRecord.position, coverEmployeeId)) {
-    return { ok: false, message: "La persona reemplazante ya está asignada ese mismo día." };
+    return { ok: false, message: "La persona reemplazante ya está asignada en ese turno." };
   }
 
   const appliedAt = now();
@@ -714,10 +714,10 @@ export function applyApprovedShiftChange({ week, request, approvedBy, employees,
 
   const excludedPositionIds = [requesterRecord.position.id, partnerRecord.position.id];
   if (hasDuplicateAfterChange(week, partnerRecord.position, request.employeeId, excludedPositionIds)) {
-    return { ok: false, message: "La persona solicitante quedaría duplicada ese día." };
+    return { ok: false, message: "La persona solicitante quedaría duplicada en ese turno." };
   }
   if (hasDuplicateAfterChange(week, requesterRecord.position, request.partnerEmployeeId, excludedPositionIds)) {
-    return { ok: false, message: "El compañero quedaría duplicado ese día." };
+    return { ok: false, message: "El compañero quedaría duplicado en ese turno." };
   }
 
   const appliedAt = now();
@@ -776,7 +776,7 @@ function revokeAbsenceOrLeave({ week, request, revokedBy, reason, now }) {
     return manualReview("La asignación fue modificada luego de la aprobación. Revisar la grilla manualmente.", { sourceRequestId: request.id, positionId: position.id });
   }
   if (sameDayDuplicate(week, position, trace.affectedEmployeeId)) {
-    return manualReview("La persona original ya está asignada ese día. Revisar la grilla manualmente.", { sourceRequestId: request.id, positionId: position.id });
+    return manualReview("La persona original ya está asignada en ese turno. Revisar la grilla manualmente.", { sourceRequestId: request.id, positionId: position.id });
   }
 
   const revokedAt = now();
@@ -840,10 +840,10 @@ function revokeShiftChange({ week, request, revokedBy, reason, now }) {
 
   const excludedPositionIds = [originalPositionId, proposedPositionId];
   if (hasDuplicateAfterChange(week, originalPosition, requesterEmployeeId, excludedPositionIds)) {
-    return manualReview("La persona solicitante ya está asignada ese día. Revisar la grilla manualmente.", { sourceRequestId: request.id, positionId: originalPositionId });
+    return manualReview("La persona solicitante ya está asignada en ese turno. Revisar la grilla manualmente.", { sourceRequestId: request.id, positionId: originalPositionId });
   }
   if (hasDuplicateAfterChange(week, proposedPosition, partnerEmployeeId, excludedPositionIds)) {
-    return manualReview("El compañero ya está asignado ese día. Revisar la grilla manualmente.", { sourceRequestId: request.id, positionId: proposedPositionId });
+    return manualReview("El compañero ya está asignado en ese turno. Revisar la grilla manualmente.", { sourceRequestId: request.id, positionId: proposedPositionId });
   }
 
   const revokedAt = now();

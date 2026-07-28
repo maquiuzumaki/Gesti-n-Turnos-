@@ -148,8 +148,9 @@ CREATE TABLE IF NOT EXISTS planning_assignments (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Evita que una persona ocupe dos puestos el mismo día en la misma semana.
-CREATE UNIQUE INDEX IF NOT EXISTS planning_one_assignment_per_employee_day
+-- La duplicación se valida por día y turno mediante un trigger; una persona
+-- puede trabajar mañana y tarde el mismo día.
+CREATE INDEX IF NOT EXISTS planning_assignments_week_employee_date_idx
 ON planning_assignments (planning_week_id, employee_id, assignment_date);
 
 CREATE TABLE IF NOT EXISTS planning_days_off (
