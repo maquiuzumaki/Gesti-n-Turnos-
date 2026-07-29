@@ -48,7 +48,7 @@ class ResponsivePlanningCssTests(unittest.TestCase):
             self.assertIn(f'{full_name}: "{short_name}"', app)
         self.assertIn('data-view="today"', app)
         self.assertIn("No hay turnos publicados para hoy", app)
-        self.assertIn('"preferred-short"', app)
+        self.assertNotIn("preferred-short", app)
 
 
 if __name__ == "__main__":

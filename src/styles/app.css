@@ -1363,9 +1363,6 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .planning-position-assignment.assigned .planning-assignment-name--compact.preferred-short {
-    font-size: clamp(12px, 2vw, 16px);
-  }
   .planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--compact {
     font-size: clamp(17px, 3vw, 22px);
   }
@@ -1390,9 +1387,6 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
   }
   .planning-position-grid--today:not(.planning-days-off-grid) .planning-position-row-label > strong {
     font-size: clamp(14px, 4.2vw, 17px);
-  }
-  .planning-position-assignment.assigned .planning-assignment-name--compact.preferred-short {
-    font-size: clamp(11px, 3.4vw, 14px);
   }
   .planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--compact {
     font-size: clamp(17px, 5vw, 21px);
