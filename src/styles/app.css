@@ -1289,3 +1289,14 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
   .proposal-progress { grid-template-columns: 32px 1fr; gap: 11px; }
   .proposal-progress .spinner { width: 30px; height: 30px; flex-basis: 30px; }
 }
+
+/* La regla debe quedar al final: en pantallas pequeñas se muestra el nombre
+   compacto y se oculta el completo, incluso después de los estilos de grilla. */
+@media (max-width: 760px), (orientation: landscape) and (max-height: 520px) and (max-width: 960px) {
+  .planning-position-assignment.assigned .planning-assignment-name--full {
+    display: none !important;
+  }
+  .planning-position-assignment.assigned .planning-assignment-name--compact {
+    display: block !important;
+  }
+}
