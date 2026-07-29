@@ -859,6 +859,7 @@ function planningEmployeeName(employee) {
     yesica: "Yesi",
     veronica: "Vero",
     cintia: "Cin",
+    milagros: "Mili",
   };
   const compactName = compactNames[normalized] || firstName;
   const size = compactName.length >= 10 ? "extra-long" : compactName.length >= 8 ? "long" : "standard";

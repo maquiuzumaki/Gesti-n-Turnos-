@@ -40,6 +40,7 @@ class ResponsivePlanningCssTests(unittest.TestCase):
             "yesica": "Yesi",
             "veronica": "Vero",
             "cintia": "Cin",
+            "milagros": "Mili",
         }.items():
             self.assertIn(f'{full_name}: "{short_name}"', app)
         self.assertIn('data-view="today"', app)
