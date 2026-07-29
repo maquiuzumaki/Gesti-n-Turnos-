@@ -845,7 +845,7 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
   max-width: 100%;
   overflow: hidden;
   color: var(--uzumaki-brown-900);
-  font-size: clamp(14px, 1.05vw, 16px);
+  font-size: clamp(15px, 1.15vw, 18px);
   font-weight: 900;
   line-height: 1.08;
   text-align: center;
@@ -1319,6 +1319,9 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
   min-width: 0;
   grid-template-columns: minmax(112px, 180px) minmax(0, 1fr);
 }
+.planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--full {
+  font-size: clamp(17px, 2vw, 21px);
+}
 
 /* La regla debe quedar al final: semana completa sin desplazamiento lateral y
    nombres compactos visibles en teléfonos y tablets. */
@@ -1340,6 +1343,19 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
   }
   .planning-position-assignment.assigned .planning-assignment-name--compact {
     display: block !important;
+    max-width: 100%;
+    overflow: hidden;
+    font-size: clamp(10px, 1.6vw, 14px);
+    font-weight: 900;
+    line-height: 1.1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .planning-position-assignment.assigned .planning-assignment-name--compact.preferred-short {
+    font-size: clamp(12px, 2vw, 16px);
+  }
+  .planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--compact {
+    font-size: clamp(17px, 3vw, 22px);
   }
   .planning-view-switcher { align-items: stretch; flex-direction: column; }
   .planning-view-switcher [role="tablist"] { display: grid; grid-template-columns: 1fr 1fr; }
@@ -1354,4 +1370,13 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
   .planning-today-empty { grid-template-columns: 36px minmax(0, 1fr); padding: 16px; }
   .planning-today-empty > span { width: 34px; height: 34px; }
   .planning-today-empty .button { grid-column: 1 / -1; width: 100%; }
+  .planning-position-assignment.assigned .planning-assignment-name--compact {
+    font-size: clamp(9px, 2.75vw, 11.5px);
+  }
+  .planning-position-assignment.assigned .planning-assignment-name--compact.preferred-short {
+    font-size: clamp(11px, 3.4vw, 14px);
+  }
+  .planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--compact {
+    font-size: clamp(17px, 5vw, 21px);
+  }
 }

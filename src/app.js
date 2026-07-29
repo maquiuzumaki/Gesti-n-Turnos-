@@ -862,7 +862,9 @@ function planningEmployeeName(employee) {
     milagros: "Mili",
   };
   const compactName = compactNames[normalized] || firstName;
-  const size = compactName.length >= 10 ? "extra-long" : compactName.length >= 8 ? "long" : "standard";
+  const size = compactNames[normalized]
+    ? "preferred-short"
+    : compactName.length >= 10 ? "extra-long" : compactName.length >= 7 ? "long" : "standard";
   return `<strong class="planning-assignment-name--full">${escapeHtml(employee.name)}</strong><strong class="planning-assignment-name--compact ${size}">${escapeHtml(compactName)}</strong>`;
 }
 

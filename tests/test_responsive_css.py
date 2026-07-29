@@ -12,8 +12,9 @@ class ResponsivePlanningCssTests(unittest.TestCase):
             ".planning-assignment-name--compact,\n"
             ".planning-position-assignment.assigned > small { display: none !important; }"
         )
-        mobile_show = css.rindex(
-            ".planning-position-assignment.assigned .planning-assignment-name--compact"
+        mobile_show = css.index(
+            ".planning-position-assignment.assigned .planning-assignment-name--compact",
+            global_hide,
         )
         self.assertGreater(mobile_show, global_hide)
         self.assertIn("display: block !important;", css[mobile_show:mobile_show + 160])
@@ -45,6 +46,7 @@ class ResponsivePlanningCssTests(unittest.TestCase):
             self.assertIn(f'{full_name}: "{short_name}"', app)
         self.assertIn('data-view="today"', app)
         self.assertIn("No hay turnos publicados para hoy", app)
+        self.assertIn('"preferred-short"', app)
 
 
 if __name__ == "__main__":
