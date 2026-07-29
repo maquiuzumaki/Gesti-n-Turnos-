@@ -1325,7 +1325,7 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
 }
 
 /* La regla debe quedar al final: semana completa sin desplazamiento lateral y
-   nombres compactos visibles en teléfonos y tablets. */
+   nombres completos visibles en teléfonos y tablets. */
 @media (max-width: 1024px) {
   .planning-position-board {
     overflow-x: hidden;
@@ -1351,20 +1351,42 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
     font-size: clamp(15px, 2.4vw, 18px);
   }
   .planning-position-assignment.assigned .planning-assignment-name--full {
-    display: none !important;
-  }
-  .planning-position-assignment.assigned .planning-assignment-name--compact {
     display: block !important;
     max-width: 100%;
-    overflow: hidden;
-    font-size: clamp(10px, 1.6vw, 14px);
+    overflow: visible;
+    font-size: clamp(9px, 1.55vw, 14px);
     font-weight: 900;
-    line-height: 1.1;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.08;
+    overflow-wrap: anywhere;
+    text-align: center;
+    text-overflow: clip;
+    white-space: normal;
+    -webkit-line-clamp: unset;
   }
-  .planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--compact {
+  .planning-position-assignment.assigned .planning-assignment-name--compact {
+    display: none !important;
+  }
+  .planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--full {
     font-size: clamp(17px, 3vw, 22px);
+    overflow-wrap: normal;
+  }
+  .planning-days-off-grid .planning-day-off-chip {
+    height: auto;
+    min-height: 28px;
+  }
+  .planning-days-off-grid .planning-day-off-chip strong {
+    overflow: visible;
+    font-size: clamp(9px, 1.55vw, 13px);
+    line-height: 1.08;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
+  }
+  .planning-position-grid.planning-days-off-grid:not(.planning-position-grid--today) {
+    grid-template-columns: clamp(54px, 13vw, 112px) repeat(7, minmax(0, 1fr));
+  }
+  .planning-position-grid.planning-days-off-grid.planning-position-grid--today {
+    grid-template-columns: clamp(72px, 20vw, 150px) minmax(0, 1fr);
   }
   .planning-view-switcher { align-items: stretch; flex-direction: column; }
   .planning-view-switcher [role="tablist"] { display: grid; grid-template-columns: 1fr 1fr; }
@@ -1379,8 +1401,9 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
   .planning-today-empty { grid-template-columns: 36px minmax(0, 1fr); padding: 16px; }
   .planning-today-empty > span { width: 34px; height: 34px; }
   .planning-today-empty .button { grid-column: 1 / -1; width: 100%; }
-  .planning-position-assignment.assigned .planning-assignment-name--compact {
-    font-size: clamp(9px, 2.75vw, 11.5px);
+  .planning-position-assignment.assigned .planning-assignment-name--full {
+    font-size: clamp(8px, 2.35vw, 10px);
+    letter-spacing: -.02em;
   }
   .planning-position-grid:not(.planning-days-off-grid) .planning-position-row-label > strong {
     font-size: clamp(10px, 3vw, 13px);
@@ -1388,7 +1411,12 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
   .planning-position-grid--today:not(.planning-days-off-grid) .planning-position-row-label > strong {
     font-size: clamp(14px, 4.2vw, 17px);
   }
-  .planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--compact {
+  .planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--full {
     font-size: clamp(17px, 5vw, 21px);
+    letter-spacing: 0;
+  }
+  .planning-days-off-grid .planning-day-off-chip strong {
+    font-size: clamp(8px, 2.35vw, 10px);
+    letter-spacing: -.02em;
   }
 }
