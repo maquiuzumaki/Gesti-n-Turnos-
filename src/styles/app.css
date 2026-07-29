@@ -1290,13 +1290,68 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
   .proposal-progress .spinner { width: 30px; height: 30px; flex-basis: 30px; }
 }
 
-/* La regla debe quedar al final: en pantallas pequeñas se muestra el nombre
-   compacto y se oculta el completo, incluso después de los estilos de grilla. */
-@media (max-width: 760px), (orientation: landscape) and (max-height: 520px) and (max-width: 960px) {
+/* Selector común para alternar entre la semana y la jornada actual. */
+.planning-view-switcher {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: white;
+  box-shadow: var(--shadow);
+}
+.planning-view-switcher > div:first-child { display: grid; gap: 2px; }
+.planning-view-switcher > div:first-child .eyebrow { margin: 0; }
+.planning-view-switcher > div:first-child strong { color: var(--uzumaki-brown-900); font: 800 16px/1.2 "Manrope", sans-serif; }
+.planning-view-switcher [role="tablist"] { display: flex; gap: 6px; padding: 4px; border-radius: 9px; background: var(--uzumaki-bg); }
+.planning-view-switcher [role="tab"] { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; padding: 0 11px; border: 1px solid transparent; border-radius: 7px; color: var(--uzumaki-muted); background: transparent; font: 800 11px/1.2 "DM Sans", sans-serif; cursor: pointer; }
+.planning-view-switcher [role="tab"] small { color: inherit; font-size: 9px; }
+.planning-view-switcher [role="tab"].active { border-color: var(--uzumaki-cream-100); color: var(--uzumaki-orange-900); background: white; box-shadow: 0 2px 7px rgb(79 54 46 / .08); }
+.planning-today-empty { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 13px; min-height: 118px; padding: 20px; border: 1px dashed var(--uzumaki-cream-100); border-radius: 11px; background: white; }
+.planning-today-empty > span { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 10px; color: var(--uzumaki-orange-900); background: var(--primary-soft); font-size: 19px; }
+.planning-today-empty strong { color: var(--uzumaki-brown-900); font-size: 14px; }
+.planning-today-empty p { margin: 3px 0 0; color: var(--uzumaki-muted); font-size: 12px; }
+.planning-position-grid.planning-position-grid--today {
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(112px, 180px) minmax(0, 1fr);
+}
+
+/* La regla debe quedar al final: semana completa sin desplazamiento lateral y
+   nombres compactos visibles en teléfonos y tablets. */
+@media (max-width: 1024px) {
+  .planning-position-board {
+    overflow-x: hidden;
+    scroll-snap-type: none;
+  }
+  .planning-position-grid {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: clamp(54px, 13vw, 112px) repeat(7, minmax(0, 1fr));
+  }
+  .planning-position-grid.planning-position-grid--today {
+    grid-template-columns: clamp(72px, 20vw, 150px) minmax(0, 1fr);
+  }
   .planning-position-assignment.assigned .planning-assignment-name--full {
     display: none !important;
   }
   .planning-position-assignment.assigned .planning-assignment-name--compact {
     display: block !important;
   }
+  .planning-view-switcher { align-items: stretch; flex-direction: column; }
+  .planning-view-switcher [role="tablist"] { display: grid; grid-template-columns: 1fr 1fr; }
+  .planning-view-switcher [role="tab"] { justify-content: center; text-align: center; }
+}
+
+@media (max-width: 560px) {
+  .planning-view-switcher { padding: 10px; }
+  .planning-view-switcher > div:first-child { display: none; }
+  .planning-view-switcher [role="tab"] { min-height: 44px; flex-wrap: wrap; gap: 3px 6px; padding: 5px 7px; }
+  .planning-view-switcher [role="tab"] small { width: 100%; }
+  .planning-today-empty { grid-template-columns: 36px minmax(0, 1fr); padding: 16px; }
+  .planning-today-empty > span { width: 34px; height: 34px; }
+  .planning-today-empty .button { grid-column: 1 / -1; width: 100%; }
 }

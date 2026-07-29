@@ -40,6 +40,7 @@ let scheduleMode = "official";
 // disponible desde el control de volver de la propia planificación.
 let planningView = "editor";
 let planningDateIndex = 0;
+let planningDisplayMode = "week";
 let selectedPlanningWeekIds = new Set();
 let sidebarCollapsed = sessionStorage.getItem("uzumaki-sidebar-collapsed") === "true";
 let employeeSearch = "";
@@ -739,17 +740,34 @@ function staffPublishedPlanningWeekPage(week) {
 function planningWeekStructure(week, conflicts, showExceptions = true, providedDaysOffSummary = null, simpleGridView = false) {
   const staffView = simpleGridView || !isAdminRole(user.role);
   const focusedEmployeeId = user.role === "staff" ? user.employeeId : planningFocusedEmployeeId;
+  const today = localIsoDate();
+  const visibleDate = planningDisplayMode === "today" ? today : null;
   const daysOffSummary = providedDaysOffSummary || week.visibleDaysOffSummary || buildDailyDaysOffSummary({
     employees: state.employees,
     week,
     availabilityMap: buildWeeklyAvailabilityMap(state.employees, week, { requests: state.requests }),
   });
-  return `${planningFocusToolbar(week, focusedEmployeeId, daysOffSummary)}<div class="planning-position-sectors ${staffView ? "planning-position-sectors--staff" : ""}" aria-label="Puestos operativos">
-    ${planningPositionSector(week, { sector: "Cocina", key: "kitchen", icon: "🍳", eyebrow: "SECTOR OPERATIVO" }, conflicts, showExceptions, staffView, focusedEmployeeId)}
-    ${planningDaysOffSector(week, "Cocina", daysOffSummary, conflicts)}
-    ${planningPositionSector(week, { sector: "Pisos", key: "floors", icon: "🏥", eyebrow: "COBERTURA POR PISO" }, conflicts, showExceptions, staffView, focusedEmployeeId)}
-    ${planningDaysOffSector(week, "Pisos", daysOffSummary, conflicts)}
+  const hasToday = week.operationalPositions.some((position) => position.date === today);
+  const viewSelector = planningGridViewSelector(today);
+  if (planningDisplayMode === "today" && !hasToday) {
+    return `${viewSelector}<section class="planning-today-empty" role="status"><span aria-hidden="true">▤</span><div><strong>No hay turnos publicados para hoy</strong><p>La grilla visible corresponde al ${formatIsoDate(week.startDate)}–${formatIsoDate(week.endDate)}. Podés abrir la semana completa.</p></div><button class="button secondary" type="button" data-action="set-planning-display-mode" data-view="week">Ver semana completa</button></section>`;
+  }
+  return `${viewSelector}${planningFocusToolbar(week, focusedEmployeeId, daysOffSummary)}<div class="planning-position-sectors ${staffView ? "planning-position-sectors--staff" : ""} ${visibleDate ? "planning-position-sectors--today" : ""}" aria-label="${visibleDate ? "Turnos asignados hoy" : "Puestos operativos de la semana"}">
+    ${planningPositionSector(week, { sector: "Cocina", key: "kitchen", icon: "🍳", eyebrow: "SECTOR OPERATIVO" }, conflicts, showExceptions, staffView, focusedEmployeeId, visibleDate)}
+    ${planningDaysOffSector(week, "Cocina", daysOffSummary, conflicts, visibleDate)}
+    ${planningPositionSector(week, { sector: "Pisos", key: "floors", icon: "🏥", eyebrow: "COBERTURA POR PISO" }, conflicts, showExceptions, staffView, focusedEmployeeId, visibleDate)}
+    ${planningDaysOffSector(week, "Pisos", daysOffSummary, conflicts, visibleDate)}
   </div>`;
+}
+
+function planningGridViewSelector(today) {
+  return `<section class="planning-view-switcher" aria-label="Forma de visualizar la grilla">
+    <div><span class="eyebrow">VISTA DE GRILLA</span><strong>${planningDisplayMode === "today" ? "Turnos asignados hoy" : "Semana completa"}</strong></div>
+    <div role="tablist" aria-label="Seleccionar vista">
+      <button type="button" role="tab" aria-selected="${planningDisplayMode === "week"}" class="${planningDisplayMode === "week" ? "active" : ""}" data-action="set-planning-display-mode" data-view="week"><span>▦</span> Semana completa</button>
+      <button type="button" role="tab" aria-selected="${planningDisplayMode === "today"}" class="${planningDisplayMode === "today" ? "active" : ""}" data-action="set-planning-display-mode" data-view="today"><span>●</span> Turnos de hoy <small>${formatIsoDate(today)}</small></button>
+    </div>
+  </section>`;
 }
 
 function planningFocusToolbar(week, focusedEmployeeId, daysOffSummary = {}) {
@@ -833,15 +851,25 @@ function emptyPositionState(position, warnings) {
 
 function planningEmployeeName(employee) {
   const firstName = String(employee?.name || "").trim().split(/\s+/)[0] || "Sin asignar";
-  const size = firstName.length >= 10 ? "extra-long" : firstName.length >= 8 ? "long" : "standard";
-  return `<strong class="planning-assignment-name--full">${escapeHtml(employee.name)}</strong><strong class="planning-assignment-name--compact ${size}">${escapeHtml(firstName)}</strong>`;
+  const normalized = firstName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const compactNames = {
+    romina: "Romi",
+    lucila: "Luci",
+    debora: "Debo",
+    yesica: "Yesi",
+    veronica: "Vero",
+    cintia: "Cin",
+  };
+  const compactName = compactNames[normalized] || firstName;
+  const size = compactName.length >= 10 ? "extra-long" : compactName.length >= 8 ? "long" : "standard";
+  return `<strong class="planning-assignment-name--full">${escapeHtml(employee.name)}</strong><strong class="planning-assignment-name--compact ${size}">${escapeHtml(compactName)}</strong>`;
 }
 
-function planningPositionSector(week, section, conflicts, showExceptions = true, staffView = false, focusedEmployeeId = null) {
-  const positions = week.operationalPositions.filter((position) => position.sector === section.sector);
+function planningPositionSector(week, section, conflicts, showExceptions = true, staffView = false, focusedEmployeeId = null, visibleDate = null) {
+  const positions = week.operationalPositions.filter((position) => position.sector === section.sector && (!visibleDate || position.date === visibleDate));
   const dates = [...new Set(positions.map((position) => position.date))].sort();
   const rows = positions
-    .filter((position) => position.dayIndex === 0)
+    .filter((position, index, source) => (visibleDate || position.dayIndex === 0) && source.findIndex((item) => item.templateId === position.templateId) === index)
     .sort((a, b) => a.shift.localeCompare(b.shift) || (a.slot || 0) - (b.slot || 0) || a.label.localeCompare(b.label));
   const dayNames = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
@@ -851,6 +879,7 @@ function planningPositionSector(week, section, conflicts, showExceptions = true,
     { value: "Tarde", modifier: "afternoon", icon: "☾", label: "Tarde" },
   ];
   const rowsByShift = Object.fromEntries(shifts.map((shift) => [shift.value, rows.filter((row) => row.shift === shift.value)]));
+  const visibleAssignmentCount = week.assignments.filter((assignment) => positions.some((position) => position.id === assignment.positionId)).length;
   const rowMarkup = (row) => {
     const [labelTitle, ...details] = row.label.split(" · ");
     const title = row.sector === "Cocina" ? "Cocina" : row.floor ? `Piso ${row.floor}` : labelTitle;
@@ -876,26 +905,26 @@ function planningPositionSector(week, section, conflicts, showExceptions = true,
   };
   return `<section class="planning-position-sector reference-sector reference-sector-${section.key}" aria-labelledby="planning-${section.key}-title">
     <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">${section.icon}</span><div><span class="reference-sector-eyebrow">${section.eyebrow}</span><h2 id="planning-${section.key}-title">${section.sector}</h2>${section.description ? `<p>${section.description}</p>` : ""}</div></header>
-    <p class="planning-scroll-hint">Deslizá horizontalmente para recorrer los siete días.</p>
-    <div class="planning-position-board" tabindex="0" aria-label="Grilla semanal desplazable"><div class="planning-position-grid" style="--morning-rows:${rowsByShift["Mañana"].length};--afternoon-rows:${rowsByShift["Tarde"].length}">
-      <div class="planning-position-corner"><span class="sr-only">Puesto</span>${staffView ? "" : `<small>${week.assignments.length} asignados</small>`}</div>
-      ${dates.map((date, index) => `<div class="planning-position-day ${date === localIsoDate() ? "is-today" : ""} ${index === dates.length - 1 ? "is-last-day" : ""}"><span>${dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
+    ${visibleDate ? "" : `<p class="planning-scroll-hint">Los siete días se ajustan al ancho de tu pantalla.</p>`}
+    <div class="planning-position-board" tabindex="0" aria-label="${visibleDate ? "Turnos de hoy" : "Grilla semanal completa"}"><div class="planning-position-grid ${visibleDate ? "planning-position-grid--today" : ""}" style="--morning-rows:${rowsByShift["Mañana"].length};--afternoon-rows:${rowsByShift["Tarde"].length}">
+      <div class="planning-position-corner"><span class="sr-only">Puesto</span>${staffView ? "" : `<small>${visibleAssignmentCount} asignados</small>`}</div>
+      ${dates.map((date, index) => `<div class="planning-position-day ${date === localIsoDate() ? "is-today" : ""} ${index === dates.length - 1 ? "is-last-day" : ""}"><span>${visibleDate ? ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"][new Date(`${date}T12:00:00`).getDay()] : dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
       ${shifts.map((shift) => `<div class="planning-shift-divider planning-shift-divider--${shift.modifier}"><span aria-hidden="true">${shift.icon}</span><strong>${shift.label}</strong></div>${rowsByShift[shift.value].map(rowMarkup).join("")}`).join("")}
     </div></div>
   </section>`;
 }
 
-function planningDaysOffSector(week, sector, daysOffSummary, conflicts) {
-  const dates = [...new Set(week.operationalPositions.map((position) => position.date))];
+function planningDaysOffSector(week, sector, daysOffSummary, conflicts, visibleDate = null) {
+  const dates = [...new Set(week.operationalPositions.map((position) => position.date))].filter((date) => !visibleDate || date === visibleDate);
   const dayNames = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
   const sectionId = `planning-days-off-${sector.toLowerCase()}`;
   const title = `Francos · ${sector}`;
   return `<section class="planning-position-sector reference-sector reference-sector-off" aria-labelledby="${sectionId}">
     <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">○</span><div><span class="reference-sector-eyebrow">DISPONIBILIDAD</span><h2 id="${sectionId}">${title}</h2></div></header>
-    <div class="planning-position-board"><div class="planning-position-grid planning-days-off-grid">
+    <div class="planning-position-board"><div class="planning-position-grid planning-days-off-grid ${visibleDate ? "planning-position-grid--today" : ""}">
       <div class="planning-position-corner" aria-label="${title}"></div>
-      ${dates.map((date, index) => `<div class="planning-position-day"><span>${dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
+      ${dates.map((date, index) => `<div class="planning-position-day"><span>${visibleDate ? ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"][new Date(`${date}T12:00:00`).getDay()] : dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
       <div class="planning-position-row-label"><strong>Personal</strong></div>${dates.map((date) => planningDaysOffCell(week, sector, date, daysOffSummary?.[sector]?.[date] || [], editable, conflicts)).join("")}
     </div></div>
   </section>`;
@@ -2064,6 +2093,7 @@ document.addEventListener("click", async (event) => {
   if (action === "new-planning-week" && canEditSchedule(user.role)) newPlanningWeekModal();
   if (action === "open-planning-library") { planningView = "library"; render(); }
   if (action === "select-planning-date") { planningDateIndex = Number(button.dataset.dateIndex) || 0; render(); }
+  if (action === "set-planning-display-mode") { planningDisplayMode = button.dataset.view === "today" ? "today" : "week"; render(); return; }
   if (action === "open-current-planning") { planningView = "editor"; render(); }
   if (action === "open-stored-planning") openStoredPlanningWeek(button.dataset.weekId);
   if (action === "clear-planning-week-selection") { selectedPlanningWeekIds.clear(); render(); }

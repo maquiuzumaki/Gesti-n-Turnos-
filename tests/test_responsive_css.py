@@ -25,6 +25,26 @@ class ResponsivePlanningCssTests(unittest.TestCase):
         )
         self.assertIn("display: none !important;", css[mobile_hide:mobile_hide + 160])
 
+    def test_week_grid_fits_phone_and_tablet_without_horizontal_scroll(self):
+        css = (ROOT / "src/styles/app.css").read_text(encoding="utf-8")
+        responsive = css[css.rindex("@media (max-width: 1024px)"):]
+        self.assertIn("overflow-x: hidden;", responsive)
+        self.assertIn("repeat(7, minmax(0, 1fr))", responsive)
+
+    def test_compact_names_and_today_view_are_present(self):
+        app = (ROOT / "src/app.js").read_text(encoding="utf-8")
+        for full_name, short_name in {
+            "romina": "Romi",
+            "lucila": "Luci",
+            "debora": "Debo",
+            "yesica": "Yesi",
+            "veronica": "Vero",
+            "cintia": "Cin",
+        }.items():
+            self.assertIn(f'{full_name}: "{short_name}"', app)
+        self.assertIn('data-view="today"', app)
+        self.assertIn("No hay turnos publicados para hoy", app)
+
 
 if __name__ == "__main__":
     unittest.main()
