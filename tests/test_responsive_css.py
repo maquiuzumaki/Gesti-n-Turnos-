@@ -31,6 +31,8 @@ class ResponsivePlanningCssTests(unittest.TestCase):
         responsive = css[css.rindex("@media (max-width: 1024px)"):]
         self.assertIn("overflow-x: hidden;", responsive)
         self.assertIn("repeat(7, minmax(0, 1fr))", responsive)
+        self.assertIn(".planning-position-row-label > strong", responsive)
+        self.assertIn("font-weight: 900;", responsive)
 
     def test_compact_names_and_today_view_are_present(self):
         app = (ROOT / "src/app.js").read_text(encoding="utf-8")

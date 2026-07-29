@@ -974,9 +974,10 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
 }
 .planning-position-row-label strong {
   font-family: "DM Sans", sans-serif;
-  font-size: var(--planning-position-size);
-  font-weight: 700;
-  line-height: 1.15;
+  font-size: clamp(14px, 1.15vw, 16px);
+  font-weight: 900;
+  line-height: 1.1;
+  letter-spacing: -.02em;
 }
 .planning-position-assignment.assigned strong,
 .planning-position-assignment.assigned .planning-assignment-name--full,
@@ -1335,8 +1336,19 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
     min-width: 0;
     grid-template-columns: clamp(54px, 13vw, 112px) repeat(7, minmax(0, 1fr));
   }
+  .planning-position-grid:not(.planning-days-off-grid) .planning-position-row-label > strong {
+    overflow: hidden;
+    font-size: clamp(11px, 1.8vw, 14px);
+    font-weight: 900;
+    line-height: 1.08;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+  }
   .planning-position-grid.planning-position-grid--today {
     grid-template-columns: clamp(72px, 20vw, 150px) minmax(0, 1fr);
+  }
+  .planning-position-grid--today:not(.planning-days-off-grid) .planning-position-row-label > strong {
+    font-size: clamp(15px, 2.4vw, 18px);
   }
   .planning-position-assignment.assigned .planning-assignment-name--full {
     display: none !important;
@@ -1372,6 +1384,12 @@ h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
   .planning-today-empty .button { grid-column: 1 / -1; width: 100%; }
   .planning-position-assignment.assigned .planning-assignment-name--compact {
     font-size: clamp(9px, 2.75vw, 11.5px);
+  }
+  .planning-position-grid:not(.planning-days-off-grid) .planning-position-row-label > strong {
+    font-size: clamp(10px, 3vw, 13px);
+  }
+  .planning-position-grid--today:not(.planning-days-off-grid) .planning-position-row-label > strong {
+    font-size: clamp(14px, 4.2vw, 17px);
   }
   .planning-position-assignment.assigned .planning-assignment-name--compact.preferred-short {
     font-size: clamp(11px, 3.4vw, 14px);
