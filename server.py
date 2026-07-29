@@ -14,13 +14,27 @@ from time import perf_counter
 from urllib.parse import quote, urlparse, urlunparse
 
 try:
-    from database import Database, DomainError
+    from database import (
+        Database,
+        DomainError,
+        begin_request_context,
+        end_request_context,
+        log_context,
+        set_request_actor,
+        set_request_path,
+    )
 except ImportError:  # permite abrir la interfaz JSON aun antes de instalar dependencias
     Database = None
     DomainError = Exception
+    begin_request_context = lambda request_id: None
+    end_request_context = lambda tokens: None
+    log_context = lambda: {}
+    set_request_actor = lambda actor_id: None
+    set_request_path = lambda path: None
 
 
 ROOT = Path(__file__).resolve().parent
+LATEST_MIGRATION = max((path.name for path in (ROOT / "migrations").glob("[0-9][0-9][0-9]_*.sql") if "checks" not in path.name), default=None)
 
 
 def load_dotenv(path):
@@ -36,6 +50,18 @@ def load_dotenv(path):
 
 load_dotenv(ROOT / ".env")
 
+IS_RAILWAY = any(
+    os.environ.get(name)
+    for name in (
+        "RAILWAY_ENVIRONMENT",
+        "RAILWAY_ENVIRONMENT_ID",
+        "RAILWAY_PROJECT_ID",
+        "RAILWAY_SERVICE_ID",
+        "RAILWAY_DEPLOYMENT_ID",
+        "RAILWAY_REPLICA_ID",
+    )
+)
+
 
 def configured_database_url():
     """Usa el proxy TCP público al desarrollar localmente.
@@ -43,7 +69,14 @@ def configured_database_url():
     En Railway se conserva DATABASE_URL, que apunta a la red privada del
     servicio y evita salir por el proxy público.
     """
-    if not os.environ.get("RAILWAY_ENVIRONMENT"):
+    if IS_RAILWAY:
+        return os.environ.get("DATABASE_URL")
+
+    # Un valor explícito (incluso vacío en tests) tiene prioridad sobre la
+    # reconstrucción automática del proxy local.
+    if "DATABASE_URL" in os.environ or "DATABASE_PUBLIC_URL" in os.environ:
+        return os.environ.get("DATABASE_URL") or os.environ.get("DATABASE_PUBLIC_URL")
+    if not IS_RAILWAY:
         host = os.environ.get("RAILWAY_TCP_PROXY_DOMAIN")
         port = os.environ.get("RAILWAY_TCP_PROXY_PORT")
         user = os.environ.get("PGUSER")
@@ -58,7 +91,7 @@ def configured_database_url():
                 "sslmode=require",
                 "",
             ))
-    return os.environ.get("DATABASE_URL") or os.environ.get("DATABASE_PUBLIC_URL")
+    return None
 
 
 DATABASE_URL = configured_database_url()
@@ -72,12 +105,13 @@ CSRF_COOKIE = "uzumaki_csrf"
 PBKDF2_ITERATIONS = 310_000
 MAX_REQUEST_BYTES = 1_048_576
 SESSION_MAX_AGE_SECONDS = int(os.environ.get("SESSION_MAX_AGE_SECONDS", "28800"))
-COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true" if os.environ.get("RAILWAY_ENVIRONMENT") else "false").lower() == "true"
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true" if IS_RAILWAY else "false").lower() == "true"
 LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
 LOGIN_WINDOW_SECONDS = int(os.environ.get("LOGIN_WINDOW_SECONDS", "900"))
 PUBLIC_PATH_PREFIXES = ("/src/", "/assets/")
 PUBLIC_PATHS = {"/", "/index.html"}
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+HTTP_SLOW_REQUEST_MS = float(os.environ.get("HTTP_SLOW_REQUEST_MS", "1000"))
 FAVICON_SVG = b"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#fb6f01"/><path d="M18 17h28v8H18zm0 14h28v8H18zm0 14h20v8H18z" fill="#fff"/></svg>"""
 CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
@@ -89,11 +123,18 @@ LOGGER = logging.getLogger("uzumaki.server")
 LOGIN_ATTEMPTS = {}
 LOGIN_ATTEMPTS_LOCK = Lock()
 
+if IS_RAILWAY and not POSTGRES:
+    raise RuntimeError("Railway requiere DATABASE_URL y el backend PostgreSQL disponible.")
 
-def log_event(event, **fields):
+
+def log_event(event, level=logging.INFO, **fields):
     """Registro JSON seguro para consola/Railway; nunca recibe secretos."""
-    details = {key: value for key, value in fields.items() if value is not None}
-    LOGGER.info("%s %s", event, json.dumps(details, ensure_ascii=False, default=str, separators=(",", ":")))
+    details = {
+        **log_context(),
+        **fields,
+    }
+    details = {key: value for key, value in details.items() if value is not None}
+    LOGGER.log(level, "%s %s", event, json.dumps(details, ensure_ascii=False, default=str, separators=(",", ":")))
 
 
 def now_iso():
@@ -159,6 +200,10 @@ class UzumakiHandler(SimpleHTTPRequestHandler):
     def handle_one_request(self):
         self._request_started_at = perf_counter()
         self._request_id = secrets.token_hex(8)
+        self._response_status = None
+        self._response_bytes = None
+        self._actor_id = None
+        context_tokens = begin_request_context(self._request_id)
         try:
             return super().handle_one_request()
         except CLIENT_DISCONNECT_ERRORS:
@@ -168,14 +213,21 @@ class UzumakiHandler(SimpleHTTPRequestHandler):
                       actor=getattr(self, "_actor_id", None),
                       request_id=getattr(self, "_request_id", None))
             return None
+        finally:
+            end_request_context(context_tokens)
 
     def log_message(self, format, *args):
         # Reemplaza el formato ruidoso del servidor estándar por un evento útil.
+        duration_ms = round((perf_counter() - getattr(self, "_request_started_at", perf_counter())) * 1000, 1)
+        status = int(args[1]) if len(args) > 1 and str(args[1]).isdigit() else getattr(self, "_response_status", None)
+        level = logging.ERROR if status and status >= 500 else logging.WARNING if duration_ms >= HTTP_SLOW_REQUEST_MS else logging.INFO
         log_event("http_request", method=getattr(self, "command", None), path=self._path() if hasattr(self, "path") else None,
-                  remote=self._client_ip(), status=args[1] if len(args) > 1 else None,
+                  remote=self._client_ip(), status=status,
                   actor=getattr(self, "_actor_id", None),
                   request_id=getattr(self, "_request_id", None),
-                  duration_ms=round((perf_counter() - getattr(self, "_request_started_at", perf_counter())) * 1000, 1))
+                  duration_ms=duration_ms,
+                  response_bytes=getattr(self, "_response_bytes", None),
+                  level=level)
 
     def end_headers(self):
         # TLS se termina en el proxy inverso; estas cabeceras protegen la app
@@ -196,10 +248,12 @@ class UzumakiHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def _path(self):
-        return urlparse(self.path).path
+        path = urlparse(self.path).path
+        set_request_path(path)
+        return path
 
     def _client_ip(self):
-        if os.environ.get("RAILWAY_ENVIRONMENT"):
+        if IS_RAILWAY:
             forwarded = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
             if forwarded:
                 return forwarded
@@ -252,7 +306,9 @@ class UzumakiHandler(SimpleHTTPRequestHandler):
             LOGIN_ATTEMPTS.pop(self._client_ip(), None)
 
     def _send_json(self, status, payload):
-        body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self._response_status = status
+        self._response_bytes = len(body)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -261,6 +317,8 @@ class UzumakiHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_no_content(self):
+        self._response_status = 204
+        self._response_bytes = 0
         self.send_response(204)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")
@@ -321,6 +379,7 @@ class UzumakiHandler(SimpleHTTPRequestHandler):
             self._send_json(401, {"error": "authenticationRequired", "message": "Iniciá sesión para continuar."})
             return None
         self._actor_id = session.get("id")
+        set_request_actor(self._actor_id)
         return session
 
     def _send_session(self, user):
@@ -359,7 +418,8 @@ class UzumakiHandler(SimpleHTTPRequestHandler):
             if not POSTGRES:
                 return self._send_json(503, {"ok": False, "storage": "postgresqlRequired"})
             try:
-                return self._send_json(200, {"ok": POSTGRES.ready(), "storage": "postgresql"})
+                readiness = POSTGRES.ready(LATEST_MIGRATION)
+                return self._send_json(200 if readiness["ok"] else 503, {**readiness, "storage": "postgresql"})
             except Exception:
                 LOGGER.exception("readiness_failed")
                 return self._send_json(503, {"ok": False, "storage": "postgresql"})
@@ -667,7 +727,9 @@ class UzumakiHandler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "53123"))
-    host = os.environ.get("HOST", "0.0.0.0")
+    # El proxy de Railway sólo puede alcanzar un proceso que escuche en todas
+    # las interfaces; una variable HOST=127.0.0.1 no debe aislar el contenedor.
+    host = "0.0.0.0" if IS_RAILWAY else os.environ.get("HOST", "0.0.0.0")
     server = ThreadingHTTPServer((host, port), UzumakiHandler)
     log_event("server_started", url=f"http://{host}:{port}", storage="postgres" if POSTGRES else "json", log_level=LOG_LEVEL, cookie_secure=COOKIE_SECURE)
     if POSTGRES:

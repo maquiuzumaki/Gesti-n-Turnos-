@@ -6,6 +6,7 @@ formato legado mientras termina la transición de pantallas.
 """
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
@@ -25,6 +26,101 @@ ROLE_TO_SYSTEM = {"admin": "sys-admin", "manager": "sys-encargada", "supervisor"
 SYSTEM_TO_ROLE = {value: key for key, value in ROLE_TO_SYSTEM.items()}
 MANAGER_ROLES = {"admin", "manager"}
 LOGGER = logging.getLogger("uzumaki.database")
+DATABASE_SLOW_QUERY_MS = float(os.environ.get("DATABASE_SLOW_QUERY_MS", "250"))
+DATABASE_SLOW_OPERATION_MS = float(os.environ.get("DATABASE_SLOW_OPERATION_MS", "750"))
+DATABASE_LOG_ALL = os.environ.get("DATABASE_LOG_ALL", "true").lower() == "true"
+REQUEST_HISTORY_LIMIT = max(50, int(os.environ.get("REQUEST_HISTORY_LIMIT", "300")))
+PLANNING_HISTORY_WEEKS = max(1, int(os.environ.get("PLANNING_HISTORY_WEEKS", "12")))
+REQUEST_ID_CONTEXT = ContextVar("request_id", default=None)
+REQUEST_PATH_CONTEXT = ContextVar("request_path", default=None)
+ACTOR_ID_CONTEXT = ContextVar("actor_id", default=None)
+
+
+def begin_request_context(request_id):
+    """Inicia contexto de observabilidad aislado por thread/request."""
+    return (
+        REQUEST_ID_CONTEXT.set(request_id),
+        REQUEST_PATH_CONTEXT.set(None),
+        ACTOR_ID_CONTEXT.set(None),
+    )
+
+
+def end_request_context(tokens):
+    REQUEST_ID_CONTEXT.reset(tokens[0])
+    REQUEST_PATH_CONTEXT.reset(tokens[1])
+    ACTOR_ID_CONTEXT.reset(tokens[2])
+
+
+def set_request_path(path):
+    REQUEST_PATH_CONTEXT.set(path)
+
+
+def set_request_actor(actor_id):
+    ACTOR_ID_CONTEXT.set(actor_id)
+
+
+def log_context():
+    return {
+        "request_id": REQUEST_ID_CONTEXT.get(),
+        "path": REQUEST_PATH_CONTEXT.get(),
+        "actor": ACTOR_ID_CONTEXT.get(),
+    }
+
+
+def _query_label(query):
+    """Resume la forma de la consulta sin parámetros ni datos personales."""
+    normalized = " ".join(str(query).split())
+    return normalized[:160]
+
+
+class ObservedCursor:
+    """Proxy de cursor que mide queries sin registrar parámetros."""
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.query_count = 0
+        self.query_ms = 0.0
+
+    def _record(self, query, started_at, error=None):
+        duration_ms = (perf_counter() - started_at) * 1000
+        self.query_count += 1
+        self.query_ms += duration_ms
+        if error or duration_ms >= DATABASE_SLOW_QUERY_MS:
+            payload = {
+                "event": "database_query_failed" if error else "database_slow_query",
+                **log_context(),
+                "duration_ms": round(duration_ms, 1),
+                "query": _query_label(query),
+                "error_type": type(error).__name__ if error else None,
+            }
+            LOGGER.log(logging.ERROR if error else logging.WARNING, "%s", json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":")))
+
+    def execute(self, query, params=None, **kwargs):
+        started_at = perf_counter()
+        error = None
+        try:
+            if params is None:
+                return self._cursor.execute(query, **kwargs)
+            return self._cursor.execute(query, params, **kwargs)
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            self._record(query, started_at, error)
+
+    def executemany(self, query, params_seq, **kwargs):
+        started_at = perf_counter()
+        error = None
+        try:
+            return self._cursor.executemany(query, params_seq, **kwargs)
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            self._record(query, started_at, error)
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
 
 
 class DomainError(Exception):
@@ -60,46 +156,64 @@ class Database:
             open=True,
             name="gestion-turnos-postgres",
         )
+        self.pool.wait(timeout=float(os.environ.get("DATABASE_STARTUP_TIMEOUT_SECONDS", "10")))
 
     @contextmanager
     def cursor(self):
         started_at = perf_counter()
+        acquired_at = None
+        observed = None
+        error = None
         try:
             with self.pool.connection(timeout=self.pool_timeout) as conn:
+                acquired_at = perf_counter()
                 with conn.cursor() as cur:
-                    yield conn, cur
+                    observed = ObservedCursor(cur)
+                    yield conn, observed
+        except Exception as exc:
+            error = exc
+            raise
         finally:
-            # Es útil para Railway: permite separar tiempo de base de datos del
-            # resto de la respuesta sin registrar SQL ni datos sensibles.
-            LOGGER.info(
-                "database_cursor %s",
-                json.dumps(
-                    {
-                        "duration_ms": round((perf_counter() - started_at) * 1000, 1),
-                        "pool": self.pool.get_stats(),
-                    },
-                    default=str,
-                    separators=(",", ":"),
-                ),
+            finished_at = perf_counter()
+            duration_ms = (finished_at - started_at) * 1000
+            payload = {
+                "event": "database_operation",
+                **log_context(),
+                "duration_ms": round(duration_ms, 1),
+                "pool_wait_ms": round(((acquired_at or finished_at) - started_at) * 1000, 1),
+                "query_ms": round(observed.query_ms, 1) if observed else 0,
+                "query_count": observed.query_count if observed else 0,
+                "error_type": type(error).__name__ if error else None,
+                "pool": self.pool.get_stats(),
+            }
+            expected_rejection = isinstance(error, DomainError)
+            level = (
+                logging.ERROR
+                if error and not expected_rejection
+                else logging.WARNING
+                if duration_ms >= DATABASE_SLOW_OPERATION_MS
+                else logging.INFO
             )
+            if DATABASE_LOG_ALL or level >= logging.WARNING:
+                LOGGER.log(level, "%s", json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":")))
 
     def close(self):
         """Libera conexiones y workers al detener el proceso localmente."""
         self.pool.close(timeout=5.0)
 
-    def ready(self):
+    def ready(self, expected_migration=None):
         with self.cursor() as (_, cur):
             cur.execute("SELECT 1")
-            return bool(cur.fetchone())
-
-    def authenticate(self, username, verify_password):
-        with self.cursor() as (_, cur):
-            cur.execute("SELECT id, username, name, system_role, employee_id, password_hash, must_change_password FROM users WHERE lower(username) = lower(%s) AND active = TRUE", (username,))
+            database_ok = bool(cur.fetchone())
+            cur.execute("SELECT name FROM schema_migrations ORDER BY name DESC LIMIT 1")
             row = cur.fetchone()
-        if not row or not verify_password("", row["password_hash"]):
-            # La comprobación real se realiza en login() para evitar exponer hashes.
-            return row
-        return row
+            latest_migration = row["name"] if row else None
+            return {
+                "ok": database_ok and (not expected_migration or latest_migration == expected_migration),
+                "database": database_ok,
+                "latestMigration": latest_migration,
+                "expectedMigration": expected_migration,
+            }
 
     def login_user(self, username):
         with self.cursor() as (_, cur):
@@ -285,12 +399,29 @@ class Database:
             employees.append(item)
         return employees
 
+    @staticmethod
+    def _request_dto(row):
+        return {
+            "id":row["id"],"employeeId":row["employee_id"],"type":row["type"],"status":row["status"],
+            "partnerEmployeeId":row["partner_employee_id"] or "","partnerStatus":row["partner_status"] or "",
+            "note":row["note"],"targetDate":row["target_date"].isoformat() if row["target_date"] else None,
+            "startDate":row["start_date"].isoformat() if row["start_date"] else None,
+            "endDate":row["end_date"].isoformat() if row["end_date"] else None,
+            "scheduleImpact":row["schedule_impact"] or {},"date":iso(row["created_at"]),"revokedAt":iso(row["revoked_at"]),
+        }
+
     def _requests_dto(self, cur, actor):
         if actor.get("role") in MANAGER_ROLES:
-            cur.execute("SELECT * FROM requests ORDER BY created_at DESC")
+            cur.execute("""SELECT id,employee_id,type,status,partner_employee_id,partner_status,note,target_date,start_date,end_date,
+                                  schedule_impact,created_at,revoked_at
+                           FROM requests ORDER BY created_at DESC LIMIT %s""", (REQUEST_HISTORY_LIMIT,))
         else:
-            cur.execute("SELECT * FROM requests WHERE employee_id=%s OR partner_employee_id=%s ORDER BY created_at DESC", (actor.get("employeeId"), actor.get("employeeId")))
-        return [{"id":r["id"],"employeeId":r["employee_id"],"type":r["type"],"status":r["status"],"partnerEmployeeId":r["partner_employee_id"] or "","partnerStatus":r["partner_status"] or "","note":r["note"],"targetDate":r["target_date"].isoformat() if r["target_date"] else None,"startDate":r["start_date"].isoformat() if r["start_date"] else None,"endDate":r["end_date"].isoformat() if r["end_date"] else None,"scheduleImpact":r["schedule_impact"] or {},"date":iso(r["created_at"]),"revokedAt":iso(r["revoked_at"])} for r in cur.fetchall()]
+            cur.execute("""SELECT id,employee_id,type,status,partner_employee_id,partner_status,note,target_date,start_date,end_date,
+                                  schedule_impact,created_at,revoked_at
+                           FROM requests WHERE employee_id=%s OR partner_employee_id=%s
+                           ORDER BY created_at DESC LIMIT %s""",
+                        (actor.get("employeeId"), actor.get("employeeId"), REQUEST_HISTORY_LIMIT))
+        return [self._request_dto(row) for row in cur.fetchall()]
 
     def _notifications_dto(self, cur, actor):
         cur.execute("""SELECT n.id,n.title,n.text,n.type,n.read_at,n.created_at FROM notifications n
@@ -313,16 +444,22 @@ class Database:
             return self._week_dto(cur, week)
 
     def _week_summaries(self, cur, actor):
-        if actor.get("role") in MANAGER_ROLES:
-            cur.execute("""SELECT w.*, count(DISTINCT a.id) assignment_count, count(DISTINCT p.id) position_count
-                FROM planning_weeks w LEFT JOIN planning_positions p ON p.planning_week_id=w.id
-                LEFT JOIN planning_assignments a ON a.planning_week_id=w.id
-                GROUP BY w.id ORDER BY w.start_date DESC""")
-        else:
-            cur.execute("""SELECT w.*, count(DISTINCT a.id) assignment_count, count(DISTINCT p.id) position_count
-                FROM planning_weeks w LEFT JOIN planning_positions p ON p.planning_week_id=w.id
-                LEFT JOIN planning_assignments a ON a.planning_week_id=w.id WHERE w.status='published'
-                GROUP BY w.id ORDER BY w.start_date DESC LIMIT 8""")
+        visibility = "" if actor.get("role") in MANAGER_ROLES else "WHERE w.status='published'"
+        limit = "" if actor.get("role") in MANAGER_ROLES else "LIMIT 8"
+        cur.execute(f"""SELECT w.*,
+                              COALESCE(assignments.assignment_count, 0) assignment_count,
+                              COALESCE(positions.position_count, 0) position_count
+                       FROM planning_weeks w
+                       LEFT JOIN (
+                           SELECT planning_week_id, count(*) assignment_count
+                           FROM planning_assignments GROUP BY planning_week_id
+                       ) assignments ON assignments.planning_week_id=w.id
+                       LEFT JOIN (
+                           SELECT planning_week_id, count(*) position_count
+                           FROM planning_positions GROUP BY planning_week_id
+                       ) positions ON positions.planning_week_id=w.id
+                       {visibility}
+                       ORDER BY w.start_date DESC {limit}""")
         return [self._week_summary(row, row["assignment_count"], row["position_count"]) for row in cur.fetchall()]
 
     def week_summaries(self, actor):
@@ -397,11 +534,20 @@ class Database:
             return {"notifications":self._notifications_dto(cur, actor)}
 
     def request_data(self, actor, request_id):
-        data = self.requests_data(actor)["requests"]
-        request = next((item for item in data if item["id"] == request_id), None)
-        if not request:
-            raise DomainError("La solicitud no existe o no está disponible.", 404, "notFound")
-        return request
+        with self.cursor() as (_, cur):
+            if actor.get("role") in MANAGER_ROLES:
+                cur.execute("""SELECT id,employee_id,type,status,partner_employee_id,partner_status,note,target_date,start_date,end_date,
+                                      schedule_impact,created_at,revoked_at
+                               FROM requests WHERE id=%s""", (request_id,))
+            else:
+                cur.execute("""SELECT id,employee_id,type,status,partner_employee_id,partner_status,note,target_date,start_date,end_date,
+                                      schedule_impact,created_at,revoked_at
+                               FROM requests WHERE id=%s AND (employee_id=%s OR partner_employee_id=%s)""",
+                            (request_id, actor.get("employeeId"), actor.get("employeeId")))
+            row = cur.fetchone()
+            if not row:
+                raise DomainError("La solicitud no existe o no está disponible.", 404, "notFound")
+            return self._request_dto(row)
 
     def _assert_manager(self, actor):
         if actor.get("role") not in MANAGER_ROLES:
@@ -478,12 +624,24 @@ class Database:
                            FROM planning_exceptions WHERE planning_week_id=%s""", (week_id,))
             exceptions = [{"id": row["id"], "date": row["date"].isoformat(), "affectedEmployeeId": row["affected_employee_id"], "coverEmployeeId": row["cover_employee_id"], "type": row["type"], "status": row["status"], **(row["metadata"] or {})} for row in cur.fetchall()]
             cur.execute("""SELECT id,employee_id,type,status,target_date,start_date,end_date,schedule_impact
-                           FROM requests WHERE status='approved'""")
+                           FROM requests
+                           WHERE status='approved'
+                             AND COALESCE(end_date,start_date,target_date,
+                                          NULLIF(schedule_impact->'target'->>'date','')::date,
+                                          NULLIF(schedule_impact->'proposed'->>'date','')::date) >= %s
+                             AND COALESCE(start_date,target_date,
+                                          NULLIF(schedule_impact->'target'->>'date','')::date,
+                                          NULLIF(schedule_impact->'proposed'->>'date','')::date) <= %s""",
+                        (week_row["start_date"] - timedelta(days=7), week_row["end_date"] + timedelta(days=7)))
             approved_requests = [{"id": row["id"], "employeeId": row["employee_id"], "type": row["type"], "status": row["status"], "targetDate": row["target_date"].isoformat() if row["target_date"] else None, "startDate": row["start_date"].isoformat() if row["start_date"] else None, "endDate": row["end_date"].isoformat() if row["end_date"] else None, "scheduleImpact": row["schedule_impact"] or {}} for row in cur.fetchall()]
             cur.execute("""SELECT a.employee_id,p.template_id,p.date,s.name sector,sh.name shift
                            FROM planning_assignments a JOIN planning_positions p ON p.id=a.position_id
+                           JOIN planning_weeks history_week ON history_week.id=a.planning_week_id
                            LEFT JOIN sectors s ON s.id=p.sector_id LEFT JOIN shifts sh ON sh.id=p.shift_id
-                           WHERE a.planning_week_id<>%s""", (week_id,))
+                           WHERE a.planning_week_id<>%s
+                             AND history_week.start_date >= %s
+                             AND history_week.start_date < %s""",
+                        (week_id, week_row["start_date"] - timedelta(weeks=PLANNING_HISTORY_WEEKS), week_row["start_date"]))
             history = [{"employeeId": row["employee_id"], "templateId": row["template_id"], "date": row["date"].isoformat(), "sector": row["sector"], "shift": row["shift"]} for row in cur.fetchall()]
 
             proposal = generate_planning_proposal({
@@ -495,15 +653,18 @@ class Database:
             # No se borran decisiones humanas: solo filas generadas sin override.
             cur.execute("DELETE FROM planning_assignments WHERE planning_week_id=%s AND generated=TRUE AND manual_override=FALSE", (week_id,))
             positions_by_id = {position["id"]: position for position in positions}
+            generated_rows = []
             for assignment in proposal["assignments"]:
                 position = positions_by_id[assignment["positionId"]]
                 metadata = {key: value for key, value in assignment.items() if key not in {"positionId", "employeeId", "assignmentType", "generated", "generationReason", "coveredEmployeeId"}}
-                cur.execute("""INSERT INTO planning_assignments
-                    (id,planning_week_id,position_id,employee_id,assignment_date,assignment_type,generated,manual_override,generation_reason,covered_employee_id,created_by,metadata)
-                    VALUES (%s,%s,%s,%s,%s,%s,TRUE,FALSE,%s,%s,%s,%s)""", (
+                generated_rows.append((
                     f"generated:{week_id}:{assignment['positionId']}", week_id, assignment["positionId"], assignment["employeeId"], position["date"],
                     assignment.get("assignmentType", "regular"), assignment.get("generationReason"), assignment.get("coveredEmployeeId"), actor["id"], Jsonb(metadata),
                 ))
+            if generated_rows:
+                cur.executemany("""INSERT INTO planning_assignments
+                    (id,planning_week_id,position_id,employee_id,assignment_date,assignment_type,generated,manual_override,generation_reason,covered_employee_id,created_by,metadata)
+                    VALUES (%s,%s,%s,%s,%s,%s,TRUE,FALSE,%s,%s,%s,%s)""", generated_rows)
             cur.execute("""UPDATE planning_weeks SET version=version+1,last_proposal_at=now(),last_proposal_mode=%s,last_coverage_gaps=%s,updated_at=now()
                            WHERE id=%s RETURNING version""", (proposal["metadata"]["mode"], Jsonb(proposal["uncoveredPositions"]), week_id))
             version = cur.fetchone()["version"]
@@ -745,14 +906,14 @@ class Database:
             if existing:
                 raise DomainError(f"Ya existe la grilla '{existing['name']}' para estas fechas ({existing['status']}). Abrila desde el historial en lugar de crear otra.", 409, "duplicateWeek")
             cur.execute("INSERT INTO planning_weeks (id,name,start_date,end_date,status,created_by) VALUES (%s,%s,%s,%s,'draft',%s)", (week_id, name, start, start + timedelta(days=6), actor["id"]))
-            cur.execute("SELECT id,sector_id,shift_id,label,slot,floor_id,optional FROM position_templates WHERE active=TRUE")
-            templates = cur.fetchall()
-            for day_index in range(7):
-                current = start + timedelta(days=day_index)
-                for template in templates:
-                    position_id = f"{week_id}:{current.isoformat()}:{template['id']}"
-                    cur.execute("""INSERT INTO planning_positions (id,planning_week_id,template_id,date,day_index,sector_id,shift_id,floor_id,slot,label,optional)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", (position_id,week_id,template["id"],current,day_index,template["sector_id"],template["shift_id"],template["floor_id"],template["slot"],template["label"],template["optional"]))
+            cur.execute("""INSERT INTO planning_positions
+                           (id,planning_week_id,template_id,date,day_index,sector_id,shift_id,floor_id,slot,label,optional)
+                           SELECT %s || ':' || (%s::date + day_offset)::text || ':' || template.id,
+                                  %s,template.id,%s::date + day_offset,day_offset,
+                                  template.sector_id,template.shift_id,template.floor_id,template.slot,template.label,template.optional
+                           FROM position_templates template
+                           CROSS JOIN generate_series(0, 6) AS days(day_offset)
+                           WHERE template.active=TRUE""", (week_id, start, week_id, start))
             self._audit(cur, actor["id"], "created_planning_week", "planning_week", week_id, metadata={"startDate": start.isoformat(), "name": name})
             conn.commit()
         return {"id": week_id, "startDate": start.isoformat(), "endDate": (start + timedelta(days=6)).isoformat(), "version": 1}

@@ -11,6 +11,7 @@ Aplicación web para planificar turnos, gestionar personal y procesar solicitude
 python3 -m pip install -r requirements.txt
 python3 scripts/migrate_postgres.py
 python3 scripts/import_json_to_postgres.py # sólo para la primera carga histórica
+python3 scripts/diagnose_postgres.py # conexión, latencia, esquema e índices
 LOG_LEVEL=INFO python3 -u server.py
 ```
 
@@ -35,6 +36,14 @@ Las acciones críticas se comunican mediante comandos de API: crear semanas, asi
 
 ## Railway
 
-En Railway, configurá `DATABASE_URL` con la URL privada del servicio PostgreSQL. Para ejecutar desde una computadora, usá la URL pública con `sslmode=require`. Consultá [docs/postgres-operations.md](docs/postgres-operations.md) para migración, validaciones y endpoints.
+En Railway, configurá `DATABASE_URL` con la URL privada del servicio PostgreSQL. El contenedor aplica las migraciones pendientes antes de iniciar la API; un bloqueo PostgreSQL evita carreras entre réplicas. Si una migración falla, el servicio no inicia con un esquema incompleto. Para ejecutar desde una computadora, usá la URL pública con `sslmode=require`. Consultá [docs/postgres-operations.md](docs/postgres-operations.md) para migración, validaciones y endpoints.
+
+Variables útiles de diagnóstico:
+
+- `LOG_LEVEL=INFO`: eventos HTTP y operativos.
+- `DATABASE_LOG_ALL=true`: resumen de cada operación PostgreSQL.
+- `DATABASE_SLOW_QUERY_MS=250`: umbral para advertencias de queries lentas.
+- `DATABASE_SLOW_OPERATION_MS=750`: umbral para operaciones lentas, incluida espera del pool.
+- `HTTP_SLOW_REQUEST_MS=1000`: umbral para requests HTTP lentos.
 
 No publiques `.env`, respaldos ni datos personales. Rotá las credenciales de base de datos antes de producción.

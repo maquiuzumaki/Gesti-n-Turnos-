@@ -14,4 +14,4 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 EXPOSE 53123
 
-CMD ["python", "server.py"]
+CMD ["sh", "-c", "python scripts/migrate_postgres.py && exec python server.py"]

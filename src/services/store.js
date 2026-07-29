@@ -204,8 +204,8 @@ export async function loadState(options = { remote: true }) {
     if (!saved) return freshState();
     const parsed = JSON.parse(saved);
     return normalizeState(parsed);
-  } catch {
-    if (options.requireAuth) throw new Error("La sesión venció. Volvé a iniciar sesión.");
+  } catch (error) {
+    if (options.requireAuth) throw error;
     try {
       const saved = localStorage.getItem(KEY);
       return saved ? normalizeState(JSON.parse(saved)) : freshState();

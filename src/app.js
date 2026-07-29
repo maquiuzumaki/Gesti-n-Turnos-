@@ -1,5 +1,5 @@
-import { clearCachedState, hydrateStateFromJson, loadState, resetState, saveState, serializeState, STATE_FILE_NAME, STATE_STORAGE_LABEL } from "./services/store.js?v=20260726-05";
-import { authenticate, endSession, requestApi } from "./services/api.js?v=20260726-01";
+import { clearCachedState, hydrateStateFromJson, loadState, resetState, saveState, serializeState, STATE_FILE_NAME, STATE_STORAGE_LABEL } from "./services/store.js?v=20260728-06";
+import { authenticate, endSession, requestApi } from "./services/api.js?v=20260728-02";
 import { showToast } from "./ui/feedback.js?v=20260726-01";
 import { closeModal as closeModalUi, openModal } from "./ui/modal.js?v=20260726-01";
 import { canEditApplications, canEditSchedule, canManageEmployees, canResolveRequests, canSeeAudit, isAdminRole, roleLabel } from "./services/permissions.js?v=20260728-06";
@@ -11,16 +11,26 @@ let user = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null");
 const app = document.querySelector("#app");
 const toastRegion = document.querySelector("#toast-region");
 let state;
+let initialLoadError = null;
 try {
   state = user?.mustChangePassword
     ? await loadState({ remote: false })
     : await loadState({ remote: Boolean(user), requireAuth: Boolean(user) });
-} catch {
-  user = null;
-  sessionStorage.removeItem(SESSION_KEY);
+} catch (error) {
+  console.error("[app] bootstrap_failed", {
+    code: error.code || "unknown",
+    status: error.status || 0,
+    requestId: error.requestId || null,
+  });
+  if (error.status === 401 || error.code === "authenticationRequired") {
+    user = null;
+    sessionStorage.removeItem(SESSION_KEY);
+  } else {
+    initialLoadError = error;
+  }
   state = await loadState({ remote: false });
 }
-if (user && !user.mustChangePassword && !state.users.some((item) => item.id === user.id || item.username === user.username)) {
+if (user && !initialLoadError && !user.mustChangePassword && !state.users.some((item) => item.id === user.id || item.username === user.username)) {
   user = null;
   sessionStorage.removeItem(SESSION_KEY);
 }
@@ -153,6 +163,7 @@ async function apiCommand(path, payload = null, method = "POST", extraHeaders = 
   if (isMutation) {
     mutationInFlight = { path, title: options.title || "Guardando cambios", message: options.message || "Estamos actualizando la información de forma segura." };
     document.body.classList.add("mutation-pending");
+    app.setAttribute("aria-busy", "true");
     if (options.showBusyModal !== false) busyModal(mutationInFlight.title, mutationInFlight.message);
   }
   try {
@@ -161,9 +172,11 @@ async function apiCommand(path, payload = null, method = "POST", extraHeaders = 
       payload: payload === null ? undefined : payload,
       headers: extraHeaders,
     });
+    initialLoadError = null;
     if (reloadState) applyApiFragment(result);
     return result;
   } catch (error) {
+    if (!error.status || error.status >= 500) initialLoadError = error;
     if (error.status === 409 && state?.planningWeek?.id) {
       try { applyApiFragment(await requestApi(`/api/planning/weeks/${encodeURIComponent(state.planningWeek.id)}`)); } catch { /* El mensaje original sigue siendo el más útil. */ }
     }
@@ -172,6 +185,7 @@ async function apiCommand(path, payload = null, method = "POST", extraHeaders = 
     if (isMutation) {
       mutationInFlight = null;
       document.body.classList.remove("mutation-pending");
+      app.removeAttribute("aria-busy");
       if (options.showBusyModal !== false) closeModal();
     }
     if (reloadState || isMutation) render();
@@ -191,9 +205,16 @@ function render() {
     ${sidebar()}
     <div class="workspace">
       ${topbar()}
+      ${connectionStatusBanner()}
       <main class="${contentClass}" id="content">${renderPage()}</main>
     </div>
   </div>`;
+}
+
+function connectionStatusBanner() {
+  if (!initialLoadError) return "";
+  const reference = initialLoadError.requestId ? ` · referencia ${escapeHtml(initialLoadError.requestId)}` : "";
+  return `<section class="connection-status-banner" role="alert"><span aria-hidden="true">!</span><div><strong>Conexión degradada</strong><small>${escapeHtml(initialLoadError.message)}${reference}. Los datos visibles pueden estar desactualizados.</small></div><button class="button secondary" type="button" data-action="retry-connection">Reintentar</button></section>`;
 }
 
 function renderLogin(error = "", username = "") {
@@ -1924,6 +1945,7 @@ document.addEventListener("click", async (event) => {
   if (pageButton) { notificationPopoverOpen = false; page = pageButton.dataset.page; if (page === "schedule" && canEditSchedule(user.role)) planningView = state.planningWeek ? "editor" : "library"; document.querySelector("#sidebar")?.classList.remove("open"); render(); return; }
   const button = event.target.closest("[data-action]"); if (!button) return;
   const action = button.dataset.action;
+  if (action === "retry-connection") { window.location.reload(); return; }
   if (action === "toggle-notification-popover") { notificationPopoverOpen = !notificationPopoverOpen; render(); return; }
   if (action === "open-notification") {
     notificationPopoverOpen = false;
@@ -2177,4 +2199,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 render();
+if (initialLoadError) {
+  toast(`${initialLoadError.message} Los datos visibles pueden estar desactualizados.`, "error");
+}
 if (user?.mustChangePassword) forcePasswordChangeModal();

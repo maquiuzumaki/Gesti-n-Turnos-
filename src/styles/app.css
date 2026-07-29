@@ -51,6 +51,15 @@ button { color: inherit; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in srgb, var(--uzumaki-primary) 28%, transparent); outline-offset: 2px; }
 h1, h2, h3, p { margin-top: 0; }
 h1, h2, h3, .brand strong { font-family: "Manrope", sans-serif; }
+.connection-status-banner { display: flex; align-items: center; gap: 12px; margin: 12px 24px 0; padding: 11px 14px; border: 1px solid #efbd83; border-radius: 10px; color: #754116; background: #fff5e8; }
+.connection-status-banner > span { display: grid; flex: 0 0 28px; width: 28px; height: 28px; place-items: center; border-radius: 50%; color: white; background: #c96a16; font-weight: 800; }
+.connection-status-banner > div { display: grid; flex: 1; gap: 2px; }
+.connection-status-banner small { color: #754116; }
+.connection-status-banner .button { min-height: 34px; padding: 7px 11px; }
+@media (max-width: 720px) {
+  .connection-status-banner { align-items: flex-start; margin: 10px 14px 0; }
+  .connection-status-banner .button { align-self: center; }
+}
 
 .app-shell { display: grid; grid-template-columns: 246px 1fr; min-height: 100vh; transition: grid-template-columns .2s cubic-bezier(.2, .8, .2, 1); }
 .app-shell.sidebar-collapsed { grid-template-columns: 82px 1fr; }
