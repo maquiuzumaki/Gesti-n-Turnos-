@@ -61,7 +61,7 @@ class VisualSystemTests(unittest.TestCase):
         self.assertIn("overflow-x: hidden;", self.css)
 
     def test_stylesheet_cache_version_was_updated(self):
-        self.assertIn("app.css?v=20260730-3", self.html)
+        self.assertIn("app.css?v=20260730-4", self.html)
 
 
 if __name__ == "__main__":

@@ -2156,16 +2156,40 @@ tbody tr:hover { background: color-mix(in srgb, var(--uzumaki-orange-400) 4%, wh
   --schedule-person-name-size: clamp(17px, calc(1.15vw + 2px), 20px);
   --schedule-today-person-name-size: clamp(19px, calc(2vw + 2px), 23px);
 }
+.planning-position-cell,
+.planning-position-row-label {
+  container-type: inline-size;
+}
 .planning-position-assignment.assigned .planning-assignment-name--full,
-.planning-days-off-grid .planning-day-off-chip strong {
-  font-size: var(--schedule-person-name-size) !important;
+.planning-days-off-grid .planning-day-off-name--full {
+  display: none !important;
+}
+.planning-position-assignment.assigned .planning-assignment-name--compact,
+.planning-days-off-grid .planning-day-off-name--compact {
+  display: block !important;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: clamp(8px, 20cqi, var(--schedule-person-name-size)) !important;
   font-weight: 900 !important;
+  line-height: 1.05;
+  overflow-wrap: normal;
+  text-align: center;
+  text-overflow: clip;
+  white-space: nowrap;
 }
-.planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--full,
-.planning-position-grid--today.planning-days-off-grid .planning-day-off-chip strong {
-  font-size: var(--schedule-today-person-name-size) !important;
+.planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--compact,
+.planning-position-grid--today.planning-days-off-grid .planning-day-off-name--compact {
+  font-size: clamp(14px, 8cqi, var(--schedule-today-person-name-size)) !important;
 }
-.planning-day-off-name--compact { display: none !important; }
+.planning-position-row-label > strong,
+.planning-position-row-label > small {
+  max-width: 100%;
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: clip;
+  white-space: nowrap;
+}
 
 @media (max-width: 1024px) {
   .planning-position-sectors {
@@ -2204,7 +2228,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--uzumaki-orange-400) 4%, wh
     width: 100%;
     max-width: 100%;
     overflow: hidden;
-    font-size: clamp(9px, 2.5vw, 10px) !important;
+    font-size: clamp(8px, 20cqi, 10px) !important;
     font-weight: 900 !important;
     letter-spacing: -.03em;
     line-height: 1.05;
@@ -2225,7 +2249,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--uzumaki-orange-400) 4%, wh
   }
   .planning-position-grid:not(.planning-position-grid--today) .planning-position-row-label > strong {
     overflow: hidden;
-    font-size: 10px !important;
+    font-size: clamp(8px, 20cqi, 10px) !important;
     letter-spacing: -.03em;
     overflow-wrap: normal;
     text-overflow: clip;

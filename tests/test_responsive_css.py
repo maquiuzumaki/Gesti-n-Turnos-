@@ -6,15 +6,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ResponsivePlanningCssTests(unittest.TestCase):
-    def test_tablet_uses_full_names_without_clipping(self):
+    def test_all_resolutions_use_compact_names_on_one_line(self):
         css = (ROOT / "src/styles/app.css").read_text(encoding="utf-8")
-        responsive_start = css.index("@media (max-width: 1024px)")
-        mobile_show = css.index(
-            ".planning-position-assignment.assigned .planning-assignment-name--full",
-            responsive_start,
+        final_rules = css[css.index("Nombres de personal: una única escala"):]
+        self.assertIn(
+            ".planning-position-assignment.assigned .planning-assignment-name--full,\n"
+            ".planning-days-off-grid .planning-day-off-name--full",
+            final_rules,
         )
-        self.assertIn("display: block !important;", css[mobile_show:mobile_show + 160])
-        self.assertIn("overflow-wrap: anywhere;", css[mobile_show:mobile_show + 360])
+        self.assertIn("display: none !important;", final_rules)
+        self.assertIn(
+            ".planning-position-assignment.assigned .planning-assignment-name--compact,\n"
+            ".planning-days-off-grid .planning-day-off-name--compact",
+            final_rules,
+        )
+        self.assertIn("font-size: clamp(8px, 20cqi, var(--schedule-person-name-size)) !important;", final_rules)
+        self.assertIn("white-space: nowrap;", final_rules)
 
     def test_mobile_uses_compact_names_on_one_line(self):
         css = (ROOT / "src/styles/app.css").read_text(encoding="utf-8")
@@ -58,14 +65,14 @@ class ResponsivePlanningCssTests(unittest.TestCase):
         self.assertIn("planning-assignment-name--full", app)
         self.assertNotIn("preferred-short", app)
 
-    def test_mobile_days_off_names_wrap_without_ellipsis(self):
+    def test_row_titles_never_wrap(self):
         css = (ROOT / "src/styles/app.css").read_text(encoding="utf-8")
-        responsive = css[css.index("@media (max-width: 1024px)"):]
-        rule = responsive.index(".planning-days-off-grid .planning-day-off-chip strong")
-        declaration = responsive[rule:rule + 360]
-        self.assertIn("overflow-wrap: anywhere;", declaration)
+        final_rules = css[css.index("Nombres de personal: una única escala"):]
+        rule = final_rules.index(".planning-position-row-label > strong")
+        declaration = final_rules[rule:rule + 300]
+        self.assertIn("overflow-wrap: normal;", declaration)
         self.assertIn("text-overflow: clip;", declaration)
-        self.assertIn("white-space: normal;", declaration)
+        self.assertIn("white-space: nowrap;", declaration)
 
     def test_today_days_off_keeps_one_day_layout(self):
         css = (ROOT / "src/styles/app.css").read_text(encoding="utf-8")
@@ -81,11 +88,14 @@ class ResponsivePlanningCssTests(unittest.TestCase):
         css = (ROOT / "src/styles/app.css").read_text(encoding="utf-8")
         final_rules = css[css.index("Nombres de personal: una única escala"):]
         self.assertIn(
-            ".planning-position-assignment.assigned .planning-assignment-name--full,\n"
-            ".planning-days-off-grid .planning-day-off-chip strong",
+            ".planning-position-assignment.assigned .planning-assignment-name--compact,\n"
+            ".planning-days-off-grid .planning-day-off-name--compact",
             final_rules,
         )
-        self.assertIn("font-size: var(--schedule-person-name-size) !important;", final_rules)
+        self.assertIn(
+            "font-size: clamp(8px, 20cqi, var(--schedule-person-name-size)) !important;",
+            final_rules,
+        )
         self.assertIn("font-weight: 900 !important;", final_rules)
         self.assertIn(
             "--schedule-person-name-size: clamp(17px, calc(1.15vw + 2px), 20px);",
