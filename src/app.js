@@ -343,7 +343,7 @@ function staffDashboard() {
       <div><span class="eyebrow light">PERSONAL OPERATIVO</span><h2>${employee.name}</h2><p>${employee.role} · ${employee.sector || "Sin sector"} · ${employee.turno || "Turno flexible"}</p></div>
       <div class="staff-profile-status"><strong>${next ? formatIsoDate(next.date) : "—"}</strong><small>Próxima asignación</small></div>
     </section>
-    <section class="metric-grid staff-metrics">${metric("Asignaciones publicadas", myAssignments.length, publishedWeek ? publishedWeek.name : "Sin grilla publicada", "sun", "▤")}${metric("Francos publicados", myDaysOff.length, "Semana publicada", "amber", "○")}${metric("Solicitudes activas", ownRequests.filter((r) => activeRequestStatuses.includes(r.status)).length, "Seguimiento personal", "blue", "↔")}</section>
+    <section class="metric-grid staff-metrics">${metric("Asignaciones publicadas", myAssignments.length, publishedWeek ? publishedWeek.name : "Sin grilla publicada", "sun", "▤")}${metric("Francos publicados", myDaysOff.length, "Semana publicada", "amber", "☕")}${metric("Solicitudes activas", ownRequests.filter((r) => activeRequestStatuses.includes(r.status)).length, "Seguimiento personal", "blue", "↔")}</section>
     <section class="staff-profile-grid">
       <article class="panel"><div class="panel-head"><div><span class="eyebrow">DATOS OPERATIVOS</span><h2>Mi puesto habitual</h2></div></div>
         <div class="staff-info-list">
@@ -720,7 +720,7 @@ function planningLaneSlot(week, position, conflicts) {
 function planningLaneDaysOff(week, sector, date, daysOffSummary, conflicts) {
   const dayOffs = daysOffSummary?.[sector]?.[date] || [];
   const editable = ["draft", "published", "paused"].includes(week.status) && canEditSchedule(user.role);
-  return `<section class="planning-lane planning-lane-off"><header><div class="planning-lane-title"><span>○</span><div><h3>Francos · ${sector}</h3><small>${dayOffs.length ? `${dayOffs.length} personas disponibles` : "Sin francos cargados"}</small></div></div><b class="planning-lane-status neutral">${dayOffs.length}</b></header><button class="planning-lane-days-off" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"}>${dayOffs.length ? dayOffs.map((dayOff) => `<span class="planning-lane-off-chip ${dayOffPersonColorClass(dayOff.name)} ${dayOff.source === "manualDayOff" ? "manual" : ""}"><strong>${escapeHtml(dayOff.name)}</strong></span>`).join("") : "Agregar franco"}</button></section>`;
+  return `<section class="planning-lane planning-lane-off"><header><div class="planning-lane-title"><span>☕</span><div><h3>Francos · ${sector}</h3><small>${dayOffs.length ? `${dayOffs.length} personas disponibles` : "Sin francos cargados"}</small></div></div><b class="planning-lane-status neutral">${dayOffs.length}</b></header><button class="planning-lane-days-off" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"}>${dayOffs.length ? dayOffs.map((dayOff) => `<span class="planning-lane-off-chip ${dayOffPersonColorClass(dayOff.name)} ${dayOff.source === "manualDayOff" ? "manual" : ""}"><strong>${escapeHtml(dayOff.name)}</strong></span>`).join("") : "Agregar franco"}</button></section>`;
 }
 
 function planningGoogleStat(label, value, meta) {
@@ -925,7 +925,7 @@ function planningDaysOffSector(week, sector, daysOffSummary, conflicts, visibleD
   const sectionId = `planning-days-off-${sector.toLowerCase()}`;
   const title = `Francos · ${sector}`;
   return `<section class="planning-position-sector reference-sector reference-sector-off" aria-labelledby="${sectionId}">
-    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">○</span><div><span class="reference-sector-eyebrow">DISPONIBILIDAD</span><h2 id="${sectionId}">${title}</h2></div></header>
+    <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">☕</span><div><span class="reference-sector-eyebrow">DISPONIBILIDAD</span><h2 id="${sectionId}">${title}</h2></div></header>
     <div class="planning-position-board"><div class="planning-position-grid planning-days-off-grid ${visibleDate ? "planning-position-grid--today" : ""}">
       <div class="planning-position-corner" aria-label="${title}"></div>
       ${dates.map((date, index) => `<div class="planning-position-day"><span>${visibleDate ? ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"][new Date(`${date}T12:00:00`).getDay()] : dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}
@@ -1162,7 +1162,7 @@ function referenceSchedulePage() {
     <div class="reference-sectors">
       ${referenceSectorBlock(reference, { key: "kitchen", icon: "🍳", eyebrow: "SECTOR OPERATIVO", title: "Cocina", description: "Producción y apoyo organizados por turno.", cornerLabel: "Turno", rows: kitchenRows })}
       ${referenceSectorBlock(reference, { key: "floors", icon: "🏥", eyebrow: "DISTRIBUCIÓN", title: "Pisos", description: "Cobertura de los tres pisos en ambos turnos.", cornerLabel: "Turno / piso", rows: floorRows })}
-      ${referenceSectorBlock(reference, { key: "off", icon: "○", eyebrow: "DISPONIBILIDAD", title: "Francos", description: "Personal de Cocina y Pisos que no presta servicio ese día.", cornerLabel: "Área", rows: offRows })}
+      ${referenceSectorBlock(reference, { key: "off", icon: "☕", eyebrow: "DISPONIBILIDAD", title: "Francos", description: "Personal de Cocina y Pisos que no presta servicio ese día.", cornerLabel: "Área", rows: offRows })}
     </div>
     <div class="reference-legend"><span><i class="working"></i> Asignación habitual</span><span><i class="coverage"></i> Cobertura o colaboración</span><span><i class="exception"></i> Cobertura excepcional</span><span><i class="off"></i> Franco</span></div>`;
 }

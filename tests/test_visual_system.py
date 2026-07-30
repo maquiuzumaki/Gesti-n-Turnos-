@@ -10,6 +10,8 @@ class VisualSystemTests(unittest.TestCase):
     def setUpClass(cls):
         cls.css = (ROOT / "src/styles/app.css").read_text(encoding="utf-8")
         cls.html = (ROOT / "index.html").read_text(encoding="utf-8")
+        cls.app = (ROOT / "src/app.js").read_text(encoding="utf-8")
+        cls.mock = (ROOT / "src/data/mockData.js").read_text(encoding="utf-8")
 
     def test_uzumaki_identity_remains_the_source_of_brand_colors(self):
         self.assertIn("--uzumaki-primary: var(--uzumaki-orange-700);", self.css)
@@ -62,6 +64,15 @@ class VisualSystemTests(unittest.TestCase):
 
     def test_stylesheet_cache_version_was_updated(self):
         self.assertIn("app.css?v=20260730-4", self.html)
+
+    def test_days_off_use_coffee_icon_in_every_frontend_view(self):
+        for source in (self.app, self.mock):
+            self.assertIn('metric("Francos publicados"', source)
+            self.assertIn('"amber", "☕"', source)
+            self.assertIn('<span>☕</span><div><h3>Francos ·', source)
+            self.assertIn('key: "off", icon: "☕"', source)
+            self.assertNotIn('key: "off", icon: "○"', source)
+        self.assertIn("app.js?v=20260730-18", self.html)
 
 
 if __name__ == "__main__":
