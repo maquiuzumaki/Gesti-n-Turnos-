@@ -2150,3 +2150,32 @@ tbody tr:hover { background: color-mix(in srgb, var(--uzumaki-orange-400) 4%, wh
   .modal,
   .modal-backdrop { animation: none !important; transition: none !important; }
 }
+
+/* Nombres de personal: una única escala por resolución, +1 px y peso uniforme. */
+.planning-position-sectors {
+  --schedule-person-name-size: clamp(17px, calc(1.15vw + 2px), 20px);
+  --schedule-today-person-name-size: clamp(19px, calc(2vw + 2px), 23px);
+}
+.planning-position-assignment.assigned .planning-assignment-name--full,
+.planning-days-off-grid .planning-day-off-chip strong {
+  font-size: var(--schedule-person-name-size) !important;
+  font-weight: 900 !important;
+}
+.planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--full,
+.planning-position-grid--today.planning-days-off-grid .planning-day-off-chip strong {
+  font-size: var(--schedule-today-person-name-size) !important;
+}
+
+@media (max-width: 1024px) {
+  .planning-position-sectors {
+    --schedule-person-name-size: clamp(11px, calc(1.55vw + 2px), 16px);
+    --schedule-today-person-name-size: clamp(19px, calc(3vw + 2px), 24px);
+  }
+}
+
+@media (max-width: 560px) {
+  .planning-position-sectors {
+    --schedule-person-name-size: clamp(10px, calc(2.35vw + 2px), 12px);
+    --schedule-today-person-name-size: clamp(19px, calc(5vw + 2px), 23px);
+  }
+}
