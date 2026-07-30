@@ -139,7 +139,6 @@ function applyApiFragment(result) {
   if (result.deletedRequestId) {
     state.requests = (state.requests || []).filter((request) => request.id !== result.deletedRequestId);
   }
-  if (result.auditLogsReset) state.auditLogs = [];
   if (result.request) {
     const index = (state.requests || []).findIndex((request) => request.id === result.request.id);
     if (index >= 0) state.requests[index] = result.request;
@@ -731,7 +730,7 @@ function staffPublishedPlanningWeekPage(week) {
   const conflicts = detectPlanningConflicts(week);
   const showOperationalExceptions = isAdminRole(user.role);
   return `<section class="week-lifecycle-card week-published staff-published-week">
-      <div class="week-lifecycle-head"><span class="week-state-icon">✓</span><div><span class="eyebrow">SOLO LECTURA</span><h2>${escapeHtml(week.name)}</h2><p>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)} · Publicada ${formatDateTime(week.publishedAt)}</p></div><span class="week-status published">Publicada</span></div>
+      <div class="week-lifecycle-head"><span class="week-state-icon">✓</span><div><span class="eyebrow">SOLO LECTURA</span><h2>${escapeHtml(week.name)}</h2><p>Publicada ${formatDateTime(week.publishedAt)}</p></div><span class="week-status published">Publicada</span></div>
       ${showOperationalExceptions ? weeklyExceptionsPanel(week, canEditSchedule(user.role)) : ""}
       ${planningWeekStructure(week, conflicts, showOperationalExceptions)}
     </section>`;
@@ -1317,10 +1316,9 @@ function auditElementLabel(entry) {
 
 function auditPage() {
   if (!canSeeAudit(user.role)) return dashboardPage();
-  const canDelete = canEditSchedule(user.role);
+  const canDelete = user.role === "admin";
   const rows = state.auditLogs.map((entry) => `<tr><td>${escapeHtml(formatAuditDate(entry.time))}</td><td><strong>${escapeHtml(entry.user || "Sistema")}</strong></td><td>${escapeHtml(auditActionLabels[entry.action] || entry.action || "Acción registrada")}</td><td><span class="sector-pill">${escapeHtml(auditElementLabel(entry))}</span>${canDelete ? `<button class="row-action danger" data-action="delete-audit-log" data-id="${escapeHtml(entry.id)}" aria-label="Eliminar movimiento de auditoría" title="Eliminar movimiento">Eliminar</button>` : ""}</td></tr>`).join("") || "<tr><td colspan=\"4\">No hay movimientos para mostrar.</td></tr>";
-  const resetAction = canDelete ? `<button class="button danger-soft" data-action="reset-audit-logs">Restablecer auditoría</button>` : "";
-  return `${pageHeading("TRAZABILIDAD", "Auditoría", "Registro de las acciones relevantes del sistema.", resetAction)}
+  return `${pageHeading("TRAZABILIDAD", "Auditoría", "Registro de las acciones relevantes del sistema.")}
     <section class="table-card"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Elemento</th></tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
@@ -1667,7 +1665,7 @@ function planningWeekName(startDate) {
   if (!startDate) return "";
   const shortDate = (value) => {
     const [, month, day] = value.split("-");
-    return `${Number(day)}/${Number(month)}`;
+    return `${day}/${month}`;
   };
   return `Grilla operativa del ${shortDate(startDate)} al ${shortDate(addIsoDays(startDate, 6))}`;
 }
@@ -2059,23 +2057,13 @@ document.addEventListener("click", async (event) => {
   if (action === "open-revoke-request") revokeRequestModal(button.dataset.id);
   if (action === "new-user") newUserModal();
   if (action === "delete-audit-log") {
-    if (!canEditSchedule(user.role)) return toast("Tu perfil no puede eliminar movimientos de auditoría.", "error");
+    if (user.role !== "admin") return;
     const entry = state.auditLogs.find((item) => item.id === button.dataset.id);
     if (!entry) return toast("No se encontró el movimiento de auditoría.", "error");
     if (!confirm(`¿Eliminar el movimiento “${entry.action}”? Esta acción no se puede deshacer.`)) return;
     try {
       await apiCommand(`/api/audit-logs/${encodeURIComponent(entry.id)}`, null, "DELETE", {}, true, { title: "Eliminando movimiento", message: "Estamos actualizando la auditoría de forma segura." });
       toast("Movimiento eliminado de la auditoría");
-    } catch (error) { toast(error.message, "error"); }
-  }
-  if (action === "reset-audit-logs") {
-    if (!canEditSchedule(user.role)) return toast("Tu perfil no puede restablecer la auditoría.", "error");
-    const count = state.auditLogs.length;
-    if (!count) return toast("La auditoría ya está vacía.");
-    if (!confirm(`¿Restablecer la auditoría? Se eliminarán definitivamente los ${count} movimientos registrados.`)) return;
-    try {
-      const result = await apiCommand("/api/audit-logs", null, "DELETE", {}, true, { title: "Restableciendo auditoría", message: "Estamos eliminando los movimientos de prueba de forma segura." });
-      toast(`Auditoría restablecida: ${result.deletedCount} movimientos eliminados`);
     } catch (error) { toast(error.message, "error"); }
   }
   if (action === "edit-user") editUserModal(button.dataset.id);

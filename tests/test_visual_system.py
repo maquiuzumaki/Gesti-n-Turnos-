@@ -63,7 +63,14 @@ class VisualSystemTests(unittest.TestCase):
         self.assertIn("overflow-x: hidden;", self.css)
 
     def test_stylesheet_cache_version_was_updated(self):
-        self.assertIn("app.css?v=20260730-4", self.html)
+        self.assertIn("app.css?v=20260730-5", self.html)
+
+    def test_clear_palette_overrides_the_dark_sidebar(self):
+        clear_palette = self.css[self.css.index("Paleta clara Uzumaki"):]
+        self.assertIn("linear-gradient(180deg, #fff9f1 0%, #ffe8cd 52%, #ffc878 100%)", clear_palette)
+        self.assertIn(".nav-item { color: #725343; }", clear_palette)
+        self.assertIn("color: var(--uzumaki-brown-900);", clear_palette)
+        self.assertNotIn("#61382c", clear_palette)
 
     def test_days_off_use_coffee_icon_in_every_frontend_view(self):
         for source in (self.app, self.mock):
@@ -72,11 +79,11 @@ class VisualSystemTests(unittest.TestCase):
             self.assertIn('<span>☕</span><div><h3>Francos ·', source)
             self.assertIn('key: "off", icon: "☕"', source)
             self.assertNotIn('key: "off", icon: "○"', source)
-        self.assertIn("app.js?v=20260730-19", self.html)
+        self.assertIn("app.js?v=20260730-22", self.html)
 
     def test_internal_responsive_hint_is_not_rendered(self):
         self.assertNotIn("Los siete días se ajustan al ancho de tu pantalla.", self.app)
-        self.assertIn("app.js?v=20260730-19", self.html)
+        self.assertIn("app.js?v=20260730-22", self.html)
 
 
 if __name__ == "__main__":

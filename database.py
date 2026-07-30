@@ -139,7 +139,7 @@ def iso(value):
 
 def planning_week_name(start_date):
     end_date = start_date + timedelta(days=6)
-    return f"Grilla operativa del {start_date.day}/{start_date.month} al {end_date.day}/{end_date.month}"
+    return f"Grilla operativa del {start_date:%d/%m} al {end_date:%d/%m}"
 
 
 class Database:
@@ -277,7 +277,7 @@ class Database:
         cur.execute("""SELECT e.id,e.position_id,e.date,sh.name shift,s.name sector,e.affected_employee_id,e.cover_employee_id,e.type,e.status,e.note,e.metadata
                        FROM planning_exceptions e LEFT JOIN shifts sh ON sh.id=e.shift_id LEFT JOIN sectors s ON s.id=e.sector_id WHERE e.planning_week_id=%s""", (week["id"],))
         exceptions = [{"id": r["id"], "positionId": r["position_id"], "date": r["date"].isoformat(), "shift": r["shift"], "sector": r["sector"], "affectedEmployeeId": r["affected_employee_id"], "coverEmployeeId": r["cover_employee_id"], "type": r["type"], "status": r["status"], "note": r["note"], **(r["metadata"] or {})} for r in cur.fetchall()]
-        return {"id": week["id"], "name": week["name"], "startDate": week["start_date"].isoformat(), "endDate": week["end_date"].isoformat(), "status": week["status"], "version": week["version"], "publishedAt": iso(week["published_at"]), "operationalPositions": positions, "assignments": assignments, "daysOff": days_off, "exceptions": exceptions, "coverages": []}
+        return {"id": week["id"], "name": planning_week_name(week["start_date"]), "startDate": week["start_date"].isoformat(), "endDate": week["end_date"].isoformat(), "status": week["status"], "version": week["version"], "publishedAt": iso(week["published_at"]), "operationalPositions": positions, "assignments": assignments, "daysOff": days_off, "exceptions": exceptions, "coverages": []}
 
     def _visible_days_off_summary(self, cur, week):
         """Entrega sólo los nombres de francos para perfiles no gestores.
@@ -430,7 +430,7 @@ class Database:
 
     @staticmethod
     def _week_summary(row, assignment_count=0, position_count=0):
-        return {"id":row["id"],"name":row["name"],"startDate":row["start_date"].isoformat(),"endDate":row["end_date"].isoformat(),"status":row["status"],"version":row["version"],"publishedAt":iso(row["published_at"]),"assignmentCount":assignment_count,"positionCount":position_count}
+        return {"id":row["id"],"name":planning_week_name(row["start_date"]),"startDate":row["start_date"].isoformat(),"endDate":row["end_date"].isoformat(),"status":row["status"],"version":row["version"],"publishedAt":iso(row["published_at"]),"assignmentCount":assignment_count,"positionCount":position_count}
 
     def week(self, actor, week_id):
         with self.cursor() as (_, cur):
@@ -555,8 +555,8 @@ class Database:
 
     @staticmethod
     def _assert_audit_log_deletion_allowed(actor):
-        if actor.get("role") not in MANAGER_ROLES:
-            raise DomainError("Tu perfil no puede eliminar movimientos de auditoría.", 403, "forbidden")
+        if actor.get("role") != "admin":
+            raise DomainError("Solo Administración principal puede eliminar movimientos de auditoría.", 403, "forbidden")
 
     def delete_audit_log(self, actor, audit_log_id):
         self._assert_audit_log_deletion_allowed(actor)
@@ -566,14 +566,6 @@ class Database:
                 raise DomainError("El movimiento de auditoría no existe.", 404, "notFound")
             conn.commit()
         return {"ok": True, "deletedAuditLogId": audit_log_id}
-
-    def reset_audit_logs(self, actor):
-        self._assert_audit_log_deletion_allowed(actor)
-        with self.cursor() as (conn, cur):
-            cur.execute("DELETE FROM audit_logs")
-            deleted_count = cur.rowcount
-            conn.commit()
-        return {"ok": True, "auditLogsReset": True, "deletedCount": deleted_count}
 
     def generate_planning_proposal(self, actor, week_id, expected_version=None):
         """Calcula y persiste una propuesta completa en una única transacción."""

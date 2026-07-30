@@ -635,7 +635,7 @@ function staffPublishedPlanningWeekPage(week) {
   const showOperationalExceptions = isAdminRole(user.role);
   return `${pageHeading("GRILLA PUBLICADA", "", "")}
     <section class="week-lifecycle-card week-published staff-published-week">
-      <div class="week-lifecycle-head"><span class="week-state-icon">✓</span><div><span class="eyebrow">SOLO LECTURA</span><h2>${escapeHtml(week.name)}</h2><p>${formatIsoDate(week.startDate)} al ${formatIsoDate(week.endDate)} · Publicada ${formatDateTime(week.publishedAt)}</p></div><span class="week-status published">Publicada</span></div>
+      <div class="week-lifecycle-head"><span class="week-state-icon">✓</span><div><span class="eyebrow">SOLO LECTURA</span><h2>${escapeHtml(week.name)}</h2><p>Publicada ${formatDateTime(week.publishedAt)}</p></div><span class="week-status published">Publicada</span></div>
       <div class="week-empty-canvas">
         <span class="week-empty-symbol">▦</span><div><h3>Grilla semanal publicada</h3><p>Consultá tus turnos, francos y novedades de la semana.</p></div>
       </div>

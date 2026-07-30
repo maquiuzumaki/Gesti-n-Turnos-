@@ -650,10 +650,6 @@ class UzumakiHandler(SimpleHTTPRequestHandler):
                 result = POSTGRES.delete_request(session, request_id)
                 log_event("request_deleted", actor=session["id"], request_id=request_id)
                 return self._send_json(200, result)
-            if path == "/api/audit-logs":
-                result = POSTGRES.reset_audit_logs(session)
-                log_event("audit_logs_reset", actor=session["id"], deleted_count=result["deletedCount"])
-                return self._send_json(200, result)
             if path.startswith("/api/audit-logs/"):
                 audit_log_id = path.split("/")[3]
                 result = POSTGRES.delete_audit_log(session, audit_log_id)
