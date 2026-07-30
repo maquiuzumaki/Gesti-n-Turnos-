@@ -2151,7 +2151,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--uzumaki-orange-400) 4%, wh
   .modal-backdrop { animation: none !important; transition: none !important; }
 }
 
-/* Nombres de personal: una única escala por resolución, +1 px y peso uniforme. */
+/* Nombres de personal: una única escala por resolución, +2 px y peso uniforme. */
 .planning-position-sectors {
   --schedule-person-name-size: clamp(17px, calc(1.15vw + 2px), 20px);
   --schedule-today-person-name-size: clamp(19px, calc(2vw + 2px), 23px);
@@ -2165,6 +2165,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--uzumaki-orange-400) 4%, wh
 .planning-position-grid--today.planning-days-off-grid .planning-day-off-chip strong {
   font-size: var(--schedule-today-person-name-size) !important;
 }
+.planning-day-off-name--compact { display: none !important; }
 
 @media (max-width: 1024px) {
   .planning-position-sectors {
@@ -2177,5 +2178,95 @@ tbody tr:hover { background: color-mix(in srgb, var(--uzumaki-orange-400) 4%, wh
   .planning-position-sectors {
     --schedule-person-name-size: clamp(10px, calc(2.35vw + 2px), 12px);
     --schedule-today-person-name-size: clamp(19px, calc(5vw + 2px), 23px);
+  }
+  .planning-position-board {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+  .planning-position-grid:not(.planning-position-grid--today),
+  .planning-position-grid.planning-days-off-grid:not(.planning-position-grid--today) {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: 52px repeat(7, minmax(0, 1fr));
+  }
+  .planning-position-grid:not(.planning-position-grid--today) > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .planning-position-assignment.assigned .planning-assignment-name--full,
+  .planning-days-off-grid .planning-day-off-name--full {
+    display: none !important;
+  }
+  .planning-position-assignment.assigned .planning-assignment-name--compact,
+  .planning-days-off-grid .planning-day-off-name--compact {
+    display: block !important;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+    font-size: clamp(9px, 2.5vw, 10px) !important;
+    font-weight: 900 !important;
+    letter-spacing: -.03em;
+    line-height: 1.05;
+    overflow-wrap: normal;
+    text-align: center;
+    text-overflow: clip;
+    white-space: nowrap;
+  }
+  .planning-position-grid--today .planning-position-assignment.assigned .planning-assignment-name--compact,
+  .planning-position-grid--today.planning-days-off-grid .planning-day-off-name--compact {
+    font-size: clamp(16px, 5vw, 20px) !important;
+    letter-spacing: 0;
+  }
+  .planning-position-grid:not(.planning-position-grid--today) .planning-position-row-label {
+    min-height: 64px;
+    padding: 4px 2px;
+    overflow: hidden;
+  }
+  .planning-position-grid:not(.planning-position-grid--today) .planning-position-row-label > strong {
+    overflow: hidden;
+    font-size: 10px !important;
+    letter-spacing: -.03em;
+    overflow-wrap: normal;
+    text-overflow: clip;
+    white-space: nowrap;
+  }
+  .planning-position-grid:not(.planning-position-grid--today) .planning-position-row-label > small {
+    display: none;
+  }
+  .planning-position-grid:not(.planning-position-grid--today) .planning-position-cell {
+    min-width: 0;
+    min-height: 64px;
+    padding: 2px 1px;
+    overflow: hidden;
+  }
+  .planning-position-grid:not(.planning-position-grid--today) .planning-position-assignment {
+    min-width: 0;
+    min-height: 60px;
+    padding: 3px 1px;
+    overflow: hidden;
+  }
+  .planning-position-grid.planning-days-off-grid:not(.planning-position-grid--today) {
+    grid-template-rows: 42px minmax(88px, auto);
+  }
+  .planning-position-grid.planning-days-off-grid:not(.planning-position-grid--today) .planning-position-row-label,
+  .planning-position-grid.planning-days-off-grid:not(.planning-position-grid--today) .planning-position-cell {
+    min-height: 88px;
+  }
+  .planning-position-grid.planning-days-off-grid:not(.planning-position-grid--today) .planning-day-off-button {
+    width: 100%;
+    min-width: 0;
+    min-height: 84px;
+    gap: 3px;
+    padding: 3px 1px;
+    overflow: hidden;
+  }
+  .planning-position-grid.planning-days-off-grid:not(.planning-position-grid--today) .planning-day-off-chip {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 22px;
+    padding: 3px 1px;
+    overflow: hidden;
   }
 }

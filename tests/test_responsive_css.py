@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ResponsivePlanningCssTests(unittest.TestCase):
-    def test_mobile_full_name_override_is_last_in_cascade(self):
+    def test_tablet_uses_full_names_without_clipping(self):
         css = (ROOT / "src/styles/app.css").read_text(encoding="utf-8")
         responsive_start = css.index("@media (max-width: 1024px)")
         mobile_show = css.index(
@@ -16,12 +16,22 @@ class ResponsivePlanningCssTests(unittest.TestCase):
         self.assertIn("display: block !important;", css[mobile_show:mobile_show + 160])
         self.assertIn("overflow-wrap: anywhere;", css[mobile_show:mobile_show + 360])
 
-    def test_mobile_compact_name_remains_hidden(self):
+    def test_mobile_uses_compact_names_on_one_line(self):
         css = (ROOT / "src/styles/app.css").read_text(encoding="utf-8")
-        mobile_hide = css.rindex(
-            ".planning-position-assignment.assigned .planning-assignment-name--compact"
+        mobile = css[css.rindex("@media (max-width: 560px)"):]
+        self.assertIn(
+            ".planning-position-assignment.assigned .planning-assignment-name--full,\n"
+            "  .planning-days-off-grid .planning-day-off-name--full",
+            mobile,
         )
-        self.assertIn("display: none !important;", css[mobile_hide:mobile_hide + 160])
+        self.assertIn("display: none !important;", mobile)
+        self.assertIn(
+            ".planning-position-assignment.assigned .planning-assignment-name--compact,\n"
+            "  .planning-days-off-grid .planning-day-off-name--compact",
+            mobile,
+        )
+        self.assertIn("display: block !important;", mobile)
+        self.assertIn("white-space: nowrap;", mobile)
 
     def test_week_grid_fits_phone_and_tablet_without_horizontal_scroll(self):
         css = (ROOT / "src/styles/app.css").read_text(encoding="utf-8")
@@ -89,6 +99,24 @@ class ResponsivePlanningCssTests(unittest.TestCase):
             "--schedule-person-name-size: clamp(10px, calc(2.35vw + 2px), 12px);",
             final_rules,
         )
+
+    def test_iphone_week_and_days_off_share_exact_columns(self):
+        css = (ROOT / "src/styles/app.css").read_text(encoding="utf-8")
+        mobile = css[css.rindex("@media (max-width: 560px)"):]
+        self.assertIn(
+            ".planning-position-grid:not(.planning-position-grid--today),\n"
+            "  .planning-position-grid.planning-days-off-grid:not(.planning-position-grid--today)",
+            mobile,
+        )
+        self.assertIn("grid-template-columns: 52px repeat(7, minmax(0, 1fr));", mobile)
+        self.assertIn(".planning-day-off-chip", mobile)
+        self.assertIn("overflow: hidden;", mobile)
+
+    def test_days_off_render_mobile_aliases(self):
+        app = (ROOT / "src/app.js").read_text(encoding="utf-8")
+        self.assertIn("function compactPlanningEmployeeName(name)", app)
+        self.assertIn('class="planning-day-off-name--compact"', app)
+        self.assertIn("compactPlanningEmployeeName(dayOff.name)", app)
 
 
 if __name__ == "__main__":

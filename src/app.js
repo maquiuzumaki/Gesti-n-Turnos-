@@ -849,8 +849,8 @@ function emptyPositionState(position, warnings) {
   return warnings.length ? "" : `<span class="planning-empty-state pending">Pendiente</span>`;
 }
 
-function planningEmployeeName(employee) {
-  const firstName = String(employee?.name || "").trim().split(/\s+/)[0] || "Sin asignar";
+function compactPlanningEmployeeName(name) {
+  const firstName = String(name || "").trim().split(/\s+/)[0] || "Sin asignar";
   const normalized = firstName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
   const compactNames = {
     romina: "Romi",
@@ -861,7 +861,11 @@ function planningEmployeeName(employee) {
     cintia: "Cin",
     milagros: "Mili",
   };
-  const compactName = compactNames[normalized] || firstName;
+  return compactNames[normalized] || firstName;
+}
+
+function planningEmployeeName(employee) {
+  const compactName = compactPlanningEmployeeName(employee?.name);
   return `<strong class="planning-assignment-name--full">${escapeHtml(employee.name)}</strong><strong class="planning-assignment-name--compact">${escapeHtml(compactName)}</strong>`;
 }
 
@@ -933,7 +937,7 @@ function planningDaysOffSector(week, sector, daysOffSummary, conflicts, visibleD
 function planningDaysOffCell(week, sector, date, dayOffs, editable, conflicts) {
   return `<div class="planning-position-cell planning-days-off-cell"><button class="planning-day-off-button ${dayOffs.length ? "assigned" : "empty"}" type="button" ${editable ? `data-action="add-planning-day-off" data-sector="${sector}" data-date="${date}"` : "disabled"} aria-label="Cargar franco de ${sector} para ${formatIsoDate(date)}">${dayOffs.length ? dayOffs.map((dayOff) => {
     const warnings = dayOff.dayOffId ? conflicts.dayOffWarnings.get(dayOff.dayOffId) || [] : [];
-    return `<span class="planning-day-off-chip ${dayOffPersonColorClass(dayOff.name)} ${warnings.length ? "warning" : ""} ${dayOff.source === "calculatedCycle" ? "calculated" : "manual"}" title="${escapeHtml(dayOff.name)}"><strong>${escapeHtml(dayOff.name)}</strong>${warnings.length ? `<em>${warnings[0]}</em>` : ""}</span>`;
+    return `<span class="planning-day-off-chip ${dayOffPersonColorClass(dayOff.name)} ${warnings.length ? "warning" : ""} ${dayOff.source === "calculatedCycle" ? "calculated" : "manual"}" title="${escapeHtml(dayOff.name)}"><strong class="planning-day-off-name--full">${escapeHtml(dayOff.name)}</strong><strong class="planning-day-off-name--compact">${escapeHtml(compactPlanningEmployeeName(dayOff.name))}</strong>${warnings.length ? `<em>${warnings[0]}</em>` : ""}</span>`;
   }).join("") : `<span>Sin francos</span>`}</button></div>`;
 }
 
