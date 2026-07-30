@@ -63,7 +63,7 @@ class VisualSystemTests(unittest.TestCase):
         self.assertIn("overflow-x: hidden;", self.css)
 
     def test_stylesheet_cache_version_was_updated(self):
-        self.assertIn("app.css?v=20260730-5", self.html)
+        self.assertIn("app.css?v=20260730-7", self.html)
 
     def test_clear_palette_overrides_the_dark_sidebar(self):
         clear_palette = self.css[self.css.index("Paleta clara Uzumaki"):]
@@ -71,6 +71,21 @@ class VisualSystemTests(unittest.TestCase):
         self.assertIn(".nav-item { color: #725343; }", clear_palette)
         self.assertIn("color: var(--uzumaki-brown-900);", clear_palette)
         self.assertNotIn("#61382c", clear_palette)
+
+    def test_clear_palette_is_shared_by_buttons_icons_and_featured_cards(self):
+        clear_palette = self.css[self.css.index("Paleta clara Uzumaki"):]
+        for selector in (
+            ".icon-button,",
+            ".button.secondary,",
+            ".metric-icon,",
+            ".request-icon,",
+            ".planning-library-icon,",
+            ".staff-hero,",
+            ".staff-profile-hero",
+        ):
+            self.assertIn(selector, clear_palette)
+        self.assertIn("--app-accent-soft: #fff0df;", clear_palette)
+        self.assertIn("linear-gradient(120deg, #ffad5e 0%, #fb8c2a 100%)", clear_palette)
 
     def test_days_off_use_coffee_icon_in_every_frontend_view(self):
         for source in (self.app, self.mock):

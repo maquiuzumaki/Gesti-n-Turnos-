@@ -2376,3 +2376,129 @@ tbody tr:hover { background: color-mix(in srgb, var(--uzumaki-orange-400) 4%, wh
     box-shadow: 18px 0 46px rgb(92 58 39 / .16);
   }
 }
+
+/* Extensión del patrón claro a superficies, botones e iconografía. */
+:root {
+  --primary-soft: #ffead6;
+  --secondary-soft: #fff3cf;
+  --app-accent-soft: #fff0df;
+  --app-accent-soft-strong: #ffdfbd;
+  --app-control-surface: #fffaf5;
+}
+
+.topbar {
+  background: rgb(255 250 244 / .94);
+}
+.icon-button,
+.date-pill,
+.button.secondary,
+.search,
+.planning-compact-heading,
+.planning-view-switcher {
+  background: var(--app-control-surface);
+}
+.icon-button:hover,
+.icon-button.active,
+.button.secondary:hover {
+  background: var(--app-accent-soft);
+}
+.icon-button b {
+  color: var(--uzumaki-brown-900);
+  background: var(--uzumaki-yellow-300);
+}
+
+.metric-card,
+.panel,
+.request-card,
+.request-filter-panel,
+.request-results-panel,
+.notification-list,
+.table-card,
+.people-table-panel,
+.planning-library,
+.planning-google-panel,
+.planning-lanes-panel,
+.planning-mobile-panel,
+.week-lifecycle-card {
+  background: linear-gradient(145deg, white 0%, #fffdf9 100%);
+}
+.metric-icon,
+.request-icon,
+.planning-library-icon,
+.reference-sector-icon,
+.week-state-icon,
+.account-session-icon,
+.dialog-icon {
+  border: 1px solid color-mix(in srgb, var(--uzumaki-orange-700) 14%, white);
+  color: var(--uzumaki-orange-900);
+  background: var(--app-accent-soft);
+  box-shadow: inset 0 1px rgb(255 255 255 / .8);
+}
+.metric-icon.sun { color: var(--uzumaki-orange-900); background: #ffead6; }
+.metric-icon.blue { color: #4e708f; background: #edf5fb; }
+.metric-icon.amber { color: #8a6110; background: #fff3cf; }
+.metric-icon.rose { color: #985151; background: #fff0ef; }
+.reference-sector-floors .reference-sector-icon {
+  border-color: #f3d89b;
+  color: #75531b;
+  background: #fff5d9;
+}
+.reference-sector-off .reference-sector-icon {
+  border-color: #edcda9;
+  color: var(--uzumaki-brown-800);
+  background: #fff5e9;
+}
+
+.staff-hero,
+.staff-profile-hero {
+  color: var(--uzumaki-brown-900);
+  border-color: #f1c28e;
+  background: linear-gradient(120deg, #ffad5e 0%, #fb8c2a 100%);
+  box-shadow: 0 16px 34px rgb(151 83 38 / .11);
+}
+.staff-hero p,
+.staff-profile-hero p,
+.shift-clock small { color: var(--uzumaki-brown-800); }
+.shift-clock {
+  border-left-color: rgb(79 54 46 / .14);
+}
+.staff-profile-avatar {
+  color: var(--uzumaki-orange-900);
+  background: rgb(255 255 255 / .68);
+  box-shadow: inset 0 1px white;
+}
+.staff-profile-status {
+  border-color: rgb(79 54 46 / .14);
+}
+.staff-hero::after,
+.staff-profile-hero::after {
+  border-color: rgb(255 255 255 / .32);
+  box-shadow: 0 0 0 32px rgb(255 255 255 / .1), 0 0 0 64px rgb(255 255 255 / .055);
+}
+
+.request-filter-card.active,
+.planning-position-day.is-today,
+.planning-position-cell.is-focused,
+.people-access-summary {
+  background: var(--app-accent-soft);
+}
+.request-filter-card.active b,
+.request-results-head b,
+.planning-my-shift {
+  color: var(--uzumaki-brown-900);
+  background: var(--uzumaki-yellow-300);
+}
+.planning-my-shift.exception {
+  color: #714514;
+  background: #ffe3b5;
+}
+.week-lifecycle-flow .active i,
+.week-lifecycle-flow .complete i {
+  color: var(--uzumaki-brown-900);
+  background: var(--uzumaki-yellow-300);
+}
+.planning-proposal-action,
+.file-label span,
+.chip:hover {
+  background: var(--app-accent-soft);
+}
