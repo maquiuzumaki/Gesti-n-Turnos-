@@ -909,7 +909,6 @@ function planningPositionSector(week, section, conflicts, showExceptions = true,
   };
   return `<section class="planning-position-sector reference-sector reference-sector-${section.key}" aria-labelledby="planning-${section.key}-title">
     <header class="reference-sector-head"><span class="reference-sector-icon" aria-hidden="true">${section.icon}</span><div><span class="reference-sector-eyebrow">${section.eyebrow}</span><h2 id="planning-${section.key}-title">${section.sector}</h2>${section.description ? `<p>${section.description}</p>` : ""}</div></header>
-    ${visibleDate ? "" : `<p class="planning-scroll-hint">Los siete días se ajustan al ancho de tu pantalla.</p>`}
     <div class="planning-position-board" tabindex="0" aria-label="${visibleDate ? "Turnos de hoy" : "Grilla semanal completa"}"><div class="planning-position-grid ${visibleDate ? "planning-position-grid--today" : ""}" style="--morning-rows:${rowsByShift["Mañana"].length};--afternoon-rows:${rowsByShift["Tarde"].length}">
       <div class="planning-position-corner"><span class="sr-only">Puesto</span>${staffView ? "" : `<small>${visibleAssignmentCount} asignados</small>`}</div>
       ${dates.map((date, index) => `<div class="planning-position-day ${date === localIsoDate() ? "is-today" : ""} ${index === dates.length - 1 ? "is-last-day" : ""}"><span>${visibleDate ? ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"][new Date(`${date}T12:00:00`).getDay()] : dayNames[index]}</span><strong>${formatIsoDate(date).slice(0, 5)}</strong></div>`).join("")}

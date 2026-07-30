@@ -72,7 +72,11 @@ class VisualSystemTests(unittest.TestCase):
             self.assertIn('<span>☕</span><div><h3>Francos ·', source)
             self.assertIn('key: "off", icon: "☕"', source)
             self.assertNotIn('key: "off", icon: "○"', source)
-        self.assertIn("app.js?v=20260730-18", self.html)
+        self.assertIn("app.js?v=20260730-19", self.html)
+
+    def test_internal_responsive_hint_is_not_rendered(self):
+        self.assertNotIn("Los siete días se ajustan al ancho de tu pantalla.", self.app)
+        self.assertIn("app.js?v=20260730-19", self.html)
 
 
 if __name__ == "__main__":
